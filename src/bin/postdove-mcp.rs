@@ -40,7 +40,7 @@ fn tool() -> Value {
     })
 }
 
-fn call(arguments: Value) -> Value {
+async fn call(arguments: Value) -> Value {
     let args: Arguments = match serde_json::from_value(arguments) {
         Ok(args) => args,
         Err(error) => return tool_error(format!("Invalid arguments: {error}")),
@@ -52,7 +52,9 @@ fn call(arguments: Value) -> Value {
         body: args.body,
         bearer: args.bearer,
         ..Request::default()
-    }) {
+    })
+    .await
+    {
         Ok(response) => {
             let data = json!({
                 "status": response.status,
@@ -88,7 +90,7 @@ enum State {
     Ready,
 }
 
-fn handle(line: &str, state: &mut State) -> Option<Value> {
+async fn handle(line: &str, state: &mut State) -> Option<Value> {
     let message: Value = match serde_json::from_str(line) {
         Ok(message) => message,
         Err(_) => return Some(rpc_error(Value::Null, -32700, "Parse error")),
@@ -133,24 +135,28 @@ fn handle(line: &str, state: &mut State) -> Option<Value> {
             return Some(rpc_error(id, -32002, "Server not initialized"));
         }
         "tools/list" => json!({"tools": [tool()]}),
-        "tools/call" if params["name"] == TOOL => call(
-            params
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| json!({})),
-        ),
+        "tools/call" if params["name"] == TOOL => {
+            call(
+                params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            )
+            .await
+        }
         "tools/call" => return Some(rpc_error(id, -32602, "Unknown or missing tool name")),
         _ => return Some(rpc_error(id, -32601, "Method not found")),
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
-fn main() -> io::Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> io::Result<()> {
     let mut state = State::default();
     let mut stdout = io::stdout().lock();
     for line in io::stdin().lock().lines() {
         let line = line?;
-        if let Some(reply) = handle(&line, &mut state) {
+        if let Some(reply) = handle(&line, &mut state).await {
             serde_json::to_writer(&mut stdout, &reply)?;
             writeln!(stdout)?;
             stdout.flush()?;

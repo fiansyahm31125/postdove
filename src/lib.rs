@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub mod collection;
+pub mod postman;
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Request {
     pub name: String,
@@ -32,6 +35,7 @@ impl Default for Request {
     }
 }
 
+#[derive(Serialize)]
 pub struct Response {
     pub status: String,
     pub elapsed_ms: u128,
@@ -49,8 +53,8 @@ mod tests {
         net::TcpListener,
     };
 
-    #[test]
-    fn sends_request_and_reads_response() {
+    #[tokio::test]
+    async fn sends_request_and_reads_response() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/echo", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
@@ -79,6 +83,7 @@ mod tests {
             bearer: "token".into(),
             ..Request::default()
         })
+        .await
         .unwrap();
         server.join().unwrap();
         assert_eq!(response.status, "201 Created");
@@ -86,13 +91,14 @@ mod tests {
         assert!(response.body.contains("\"ok\": true"));
     }
 
-    #[test]
-    fn rejects_unsupported_scheme_and_malformed_header() {
+    #[tokio::test]
+    async fn rejects_unsupported_scheme_and_malformed_header() {
         assert!(
             send(Request {
                 url: "file:///tmp/example".into(),
                 ..Request::default()
             })
+            .await
             .is_err()
         );
         assert!(
@@ -101,21 +107,18 @@ mod tests {
                 headers: "invalid".into(),
                 ..Request::default()
             })
+            .await
             .is_err()
         );
     }
 }
 
-pub fn send(request: Request) -> Result<Response, String> {
+pub async fn send(request: Request) -> Result<Response, String> {
     use reqwest::{
-        Method, Url,
-        blocking::Client,
+        Client, Method, Url,
         header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue},
     };
-    use std::{
-        io::Read,
-        time::{Duration, Instant},
-    };
+    use std::time::{Duration, Instant};
 
     const LIMIT: usize = 1024 * 1024;
     let url = Url::parse(request.url.trim()).map_err(|error| format!("Invalid URL: {error}"))?;
@@ -154,8 +157,9 @@ pub fn send(request: Request) -> Result<Response, String> {
     }
 
     let start = Instant::now();
-    let response = builder
+    let mut response = builder
         .send()
+        .await
         .map_err(|error| format!("Request failed: {}", error.without_url()))?;
     let status = response.status().to_string();
     let headers = response
@@ -165,10 +169,17 @@ pub fn send(request: Request) -> Result<Response, String> {
         .collect::<Vec<_>>()
         .join("\n");
     let mut bytes = Vec::new();
-    response
-        .take((LIMIT + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("Could not read response: {error}"))?;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Could not read response: {}", error.without_url()))?
+    {
+        let remaining = LIMIT + 1 - bytes.len();
+        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if bytes.len() > LIMIT {
+            break;
+        }
+    }
     let elapsed_ms = start.elapsed().as_millis();
     let truncated = bytes.len() > LIMIT;
     bytes.truncate(LIMIT);

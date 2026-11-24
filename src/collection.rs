@@ -1,4 +1,4 @@
-use postdove::Request;
+use crate::Request;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -19,6 +19,15 @@ pub struct Collection {
 }
 
 impl Collection {
+    pub fn variables_for(&self, environment: Option<&str>) -> Result<BTreeMap<&str, &str>, String> {
+        let mut vars = BTreeMap::new();
+        read_vars(&self.variables, &mut vars)?;
+        if let Some(values) = environment.and_then(|name| self.environments.get(name)) {
+            read_vars(values, &mut vars)?;
+        }
+        Ok(vars)
+    }
+
     pub fn prepare(
         &self,
         draft: &Request,
@@ -38,11 +47,7 @@ impl Collection {
             ));
         }
 
-        let mut vars = BTreeMap::new();
-        read_vars(&self.variables, &mut vars)?;
-        if let Some(values) = environment.and_then(|name| self.environments.get(name)) {
-            read_vars(values, &mut vars)?;
-        }
+        let vars = self.variables_for(environment)?;
 
         let mut request = draft.clone();
         let local_headers = expand(&request.headers, &vars)?;

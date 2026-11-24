@@ -1,5 +1,5 @@
+use crate::Request;
 use crate::collection::Collection;
-use postdove::Request;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 

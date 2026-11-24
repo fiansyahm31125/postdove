@@ -1,23 +1,28 @@
 # Postdove
 
 API client desktop untuk menyusun, mengirim, dan memeriksa request HTTP.
-Aplikasi ditulis dalam Rust dengan eframe/egui dan reqwest.
+Postdove memakai Tauri v2 dengan WebView bawaan OS, TypeScript dan CSS native
+yang dibundle melalui Vite 6, serta Rust dengan Tokio untuk request HTTP.
 
 ## Menjalankan
 
-Dari folder proyek dengan toolchain Rust terpasang:
+Siapkan Node.js, Rust, dan dependensi sistem sesuai [panduan Tauri](https://v2.tauri.app/start/prerequisites/).
+Windows menggunakan Microsoft Edge WebView2. Linux menggunakan WebKitGTK 4.1.
 
 ```powershell
-cargo run --locked
+npm ci
+npm run tauri dev
 ```
 
-Untuk build release Windows, jalankan `cargo build --release --locked`.
-Executable tersedia di `target\release\postdove.exe`.
+Untuk membuat paket desktop sesuai platform, jalankan `npm run tauri build`.
+Workspace versi lama dari eframe dibaca saat aplikasi Tauri dibuka sebelum
+workspace Tauri ada. Perubahan di aplikasi baru disimpan ke `workspace.json`
+di direktori data aplikasi Tauri.
 
 ## Penggunaan
 
 1. Pilih metode HTTP dan isi URL lengkap. Tambahkan query parameter langsung di URL.
-2. Isi **Headers** dengan satu pasangan nama dan nilai per baris. Untuk JSON, gunakan
+2. Isi kolom **Name** dan **Value** di **Headers**. Untuk JSON, gunakan
    `Content-Type: application/json` dan masukkan payload di **Body**.
 3. Bila diperlukan, masukkan token di **Auth**. Klik **Send** atau tekan Ctrl+Enter.
 4. Panel **Response** menampilkan status, durasi, ukuran, dan header atau body.
@@ -32,6 +37,7 @@ URL, header manual, dan body dari request yang disimpan tersimpan sebagai teks l
 ## Tes
 
 ```powershell
+npm run build
 cargo test --locked
 ```
 
