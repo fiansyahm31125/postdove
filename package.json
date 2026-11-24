@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
-    "build": "tsc --noEmit && vite build",
+    "dev": "vite frontend --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "tsc --noEmit && vite build frontend --outDir ../dist --emptyOutDir",
     "tauri": "tauri"
   },
   "dependencies": { "@tauri-apps/api": "^2" },
