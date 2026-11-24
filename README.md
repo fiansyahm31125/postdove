@@ -63,3 +63,16 @@ Contoh argumen tool:
 ```json
 {"url":"http://127.0.0.1:8080/health","method":"GET"}
 ```
+
+## Import dan export koleksi
+
+- Pilih **Import collection** di toolbar lalu buka JSON Postman Collection v2.1.
+  Hasil impor muncul sebagai koleksi baru. Request dengan URL string atau
+  `url.raw` dapat diimpor.
+- Pilih koleksi lalu klik **Export collection** untuk menyimpan file
+  `.postman_collection.json`. **Copy collection JSON** menyalin format yang sama.
+- Skrip dan contoh respons dari file impor dipertahankan saat ekspor ulang.
+  Eksekusi request di Postdove menggunakan header dan raw body. Skrip Postman,
+  auth Postman, environment Postdove, dan tes status Postdove tidak dikonversi
+  menjadi perilaku yang setara di aplikasi tujuan. Token Bearer yang diisi
+  sebagai field sesi Postdove tidak diekspor.

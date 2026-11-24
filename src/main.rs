@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod collection;
+mod postman;
 
 use collection::{COLLECTIONS_KEY, Collection};
 use eframe::egui::{self, Color32, RichText, TextEdit};
@@ -48,6 +49,7 @@ struct Postdove {
     environment: Option<String>,
     collection_tokens: std::collections::BTreeMap<usize, String>,
     expected_status: Option<u16>,
+    transfer_status: Option<Result<String, String>>,
     selected: Option<usize>,
     history: Vec<Request>,
     editor: Editor,
@@ -294,6 +296,80 @@ impl Postdove {
         }
     }
 
+    fn import_collection(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Postman collection", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+        let imported = std::fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read collection: {error}"))
+            .and_then(|json| postman::import(&json));
+        self.transfer_status = Some(imported.map(|(collection, mut requests)| {
+            let index = self.collections.len();
+            let message = format!(
+                "Imported {} ({} requests).",
+                collection.name,
+                requests.len()
+            );
+            for request in &mut requests {
+                request.collection = index;
+            }
+            self.collections.push(collection);
+            self.saved.extend(requests);
+            self.open_collection(index);
+            self.collection_tab = CollectionTab::Overview;
+            self.show_history = false;
+            message
+        }));
+    }
+
+    fn export_collection(&mut self) {
+        let collection = &self.collections[self.active_collection];
+        let requests: Vec<_> = self
+            .saved
+            .iter()
+            .filter(|request| request.collection == self.active_collection)
+            .collect();
+        let json = match postman::export(collection, &requests) {
+            Ok(json) => json,
+            Err(error) => {
+                self.transfer_status = Some(Err(error));
+                return;
+            }
+        };
+        let stem: String = collection
+            .name
+            .chars()
+            .map(|ch| {
+                if ch.is_alphanumeric() || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Postman collection", &["json"])
+            .set_file_name(format!("{stem}.postman_collection.json"))
+            .save_file()
+        else {
+            return;
+        };
+        self.transfer_status = Some(
+            std::fs::write(&path, json)
+                .map(|()| {
+                    format!(
+                        "Exported {} requests to {}.",
+                        requests.len(),
+                        path.display()
+                    )
+                })
+                .map_err(|error| format!("Could not save collection: {error}")),
+        );
+    }
+
     fn collection_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             ui.strong(&self.collections[self.active_collection].name);
@@ -305,6 +381,12 @@ impl Postdove {
             }
             if ui.button("+ New request").clicked() {
                 self.reset();
+            }
+            if ui.button("Import collection").clicked() {
+                self.import_collection();
+            }
+            if ui.button("Export collection").clicked() {
+                self.export_collection();
             }
             if ui.button("Environments").clicked() {
                 self.viewing_collection = true;
@@ -319,6 +401,12 @@ impl Postdove {
                     }
                 });
         });
+        if let Some(status) = &self.transfer_status {
+            match status {
+                Ok(message) => ui.colored_label(NEON, message),
+                Err(message) => ui.colored_label(RED, message),
+            };
+        }
         ui.separator();
     }
 
@@ -381,10 +469,10 @@ impl Postdove {
                             .iter()
                             .filter(|request| request.collection == self.active_collection)
                             .collect();
-                        ui.ctx().copy_text(
-                            serde_json::json!({ "collection": collection, "requests": requests })
-                                .to_string(),
-                        );
+                        match postman::export(collection, &requests) {
+                            Ok(json) => ui.ctx().copy_text(json),
+                            Err(error) => self.transfer_status = Some(Err(error)),
+                        }
                     }
 
                     let ui = &mut columns[1];

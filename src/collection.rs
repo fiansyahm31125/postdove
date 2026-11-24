@@ -25,6 +25,19 @@ impl Collection {
         environment: Option<&str>,
         bearer: &str,
     ) -> Result<Request, String> {
+        if let Some(mode) = draft
+            .postman_item
+            .as_ref()
+            .and_then(|item| item["request"]["body"]["mode"].as_str())
+            && mode != "raw"
+            && draft.body.is_empty()
+            && draft.postman_item.as_ref().unwrap()["request"]["body"]["disabled"] != true
+        {
+            return Err(format!(
+                "Postman body mode '{mode}' must be converted to a raw body before sending."
+            ));
+        }
+
         let mut vars = BTreeMap::new();
         read_vars(&self.variables, &mut vars)?;
         if let Some(values) = environment.and_then(|name| self.environments.get(name)) {
