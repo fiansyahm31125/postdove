@@ -17,11 +17,25 @@ interface Offer {
   expiresInSeconds: number;
 }
 interface Snapshot {
-  folders: { id: string; name: string }[];
+  folders: { id: string; name: string; desktopParent?: string | null }[];
   requests: {
     id: string; folderId: string; name: string; method: string; url: string;
     headers: string[]; parameters: string[];
   }[];
+}
+
+function renderSharedFolder(snapshot: Snapshot, folder: Snapshot['folders'][number]) {
+  return <details key={folder.id} open className="rounded border border-ui-border p-2">
+    <summary className="cursor-pointer font-semibold">{folder.name}</summary>
+    {snapshot.folders.filter(child => child.desktopParent === folder.id).map(child => renderSharedFolder(snapshot, child))}
+    {snapshot.requests.filter(request => request.folderId === folder.id).map(request => <div key={request.id}
+      className="mt-2 space-y-0.5 border-t border-ui-border pt-2">
+      <div><span className="font-mono text-ui-accent-soft">{request.method}</span> {request.name}</div>
+      <div className="break-all font-mono text-[11px] text-ui-secondary">{request.url}</div>
+      {request.headers.length > 0 && <div className="text-ui-secondary">Headers: {request.headers.join(', ')}</div>}
+      {request.parameters.length > 0 && <div className="text-ui-secondary">Parameters: {request.parameters.join(', ')}</div>}
+    </div>)}
+  </details>;
 }
 
 const inputClass = 'min-w-0 rounded border border-ui-border bg-ui-canvas p-2 text-ui-ink';
@@ -242,16 +256,8 @@ export function LanPanel({ onClose, onSharingChange, reportResult }: {
         {snapshot && <section className="space-y-2 border-t border-ui-border p-4" aria-label="Read-only workspace">
           <h3 className="font-semibold">Shared workspace · Read-only</h3>
           {!snapshot.folders.length && <p className="text-ui-secondary">The host workspace has no collections.</p>}
-          {snapshot.folders.map(folder => <details key={folder.id} open className="rounded border border-ui-border p-2">
-            <summary className="cursor-pointer font-semibold">{folder.name}</summary>
-            {snapshot.requests.filter(request => request.folderId === folder.id).map(request => <div key={request.id}
-              className="mt-2 space-y-0.5 border-t border-ui-border pt-2">
-              <div><span className="font-mono text-ui-accent-soft">{request.method}</span> {request.name}</div>
-              <div className="break-all font-mono text-[11px] text-ui-secondary">{request.url}</div>
-              {request.headers.length > 0 && <div className="text-ui-secondary">Headers: {request.headers.join(', ')}</div>}
-              {request.parameters.length > 0 && <div className="text-ui-secondary">Parameters: {request.parameters.join(', ')}</div>}
-            </div>)}
-          </details>)}
+          {snapshot.folders.filter(folder => !snapshot.folders.some(parent => parent.id === folder.desktopParent))
+            .map(folder => renderSharedFolder(snapshot, folder))}
         </section>}
       </section>
     </div>

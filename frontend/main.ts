@@ -2,13 +2,13 @@ import { invoke } from '@tauri-apps/api/core';
 import type { ApiEnvironment, ApiRequest, CollectionFolder, CollectionVariableProfiles, EnvironmentVariable, HistoryEntry, KeyValueItem } from './types/api';
 import { INITIAL_ENVIRONMENTS, INITIAL_FOLDERS, INITIAL_REQUESTS } from './data/seedData';
 import { parseParamsFromUrl, uid } from './utils/httpUtils';
+import { folderAncestors } from './utils/folderTree';
+import type { Theme } from './themes';
 
 const DEFAULT_AUTH = {
   type: 'none', bearerToken: '', apiKeyName: '', apiKeyValue: '',
   apiKeyIn: 'header', basicUsername: '', basicPassword: '',
 } as const;
-
-export type Theme = 'dark' | 'light';
 
 export interface StudioWorkspace {
   folders: CollectionFolder[];
@@ -78,12 +78,33 @@ export function requestProfile(profiles: CollectionVariableProfiles) {
 
 function migrateCollectionProfiles(state: StudioWorkspace): StudioWorkspace {
   const folderById = new Map(state.folders.map(folder => [folder.id, folder]));
-  const rootOf = (id: string) => folderById.get(id)?.desktopParent ?? id;
+  const legacyPaths = new Map<string, Map<string, string>>();
+  for (const folder of state.folders) {
+    if (!folder.desktopParent || !folder.desktopPath) continue;
+    const paths = legacyPaths.get(folder.desktopParent) ?? new Map<string, string>();
+    paths.set(folder.desktopPath, folder.id);
+    legacyPaths.set(folder.desktopParent, paths);
+  }
+  for (const [root, paths] of legacyPaths) {
+    function ensurePath(path: string): string {
+      const segments = path.split('/');
+      const name = segments.pop()!;
+      const parent = segments.length ? ensurePath(segments.join('/')) : root;
+      const id = paths.get(path) ?? uid('folder');
+      const existing = folderById.get(id);
+      folderById.set(id, { ...existing, id, name, description: existing?.description ?? '',
+        desktopParent: parent, desktopPath: undefined });
+      paths.set(path, id);
+      return id;
+    }
+    for (const path of paths.keys()) ensurePath(path);
+  }
+  const rootOf = (id: string) => folderAncestors(id, folderById)[0]?.id ?? id;
   const seeded = new Set(INITIAL_FOLDERS.map(folder => folder.id));
   const localSandbox = state.environments.find(env => env.id === 'env_local_sandbox') ?? INITIAL_ENVIRONMENTS[0];
   const selected = state.environments.find(env => env.id === state.activeEnvId);
   const profilesById = new Map<string, CollectionVariableProfiles>();
-  const folders = state.folders.map(folder => {
+  const folders = Array.from(folderById.values(), folder => {
     if (folder.desktopParent) return folder;
     const fromRequest = state.requests.find(request => rootOf(request.folderId) === folder.id && request.desktopVariables?.length)?.desktopVariables;
     const stored = (folder.desktopCollection as { variables?: string } | undefined)?.variables;
@@ -109,17 +130,25 @@ function adaptCollection(collection: LegacyCollection, requests: LegacyRequest[]
       collectionProfiles: profiles },
   ];
   const folderIds = new Map<string, string>();
-  for (const path of new Set([...collection.folders, ...requests.map(request => request.folder).filter(Boolean)])) {
+  function addPath(path: string): string {
+    if (!path) return root;
+    const existing = folderIds.get(path);
+    if (existing) return existing;
+    const parts = path.split('/');
+    const name = parts.pop()!;
+    const parent = addPath(parts.join('/'));
     const id = uid('folder');
     folderIds.set(path, id);
-    folders.push({ id, name: `${collection.name} / ${path}`, description: '', desktopParent: root, desktopPath: path });
+    folders.push({ id, name, description: '', desktopParent: parent });
+    return id;
   }
+  for (const path of collection.folders) addPath(path);
   const converted = requests.map((request): ApiRequest => {
     const manualHeaders = pairs(request.headers, ':');
     const headerNames = new Set(manualHeaders.map(item => item.key.toLowerCase()));
     const defaults = pairs(collection.headers ?? '', ':').filter(item => !headerNames.has(item.key.toLowerCase()));
     return {
-      id: uid('req'), folderId: folderIds.get(request.folder) ?? root,
+      id: uid('req'), folderId: addPath(request.folder),
       name: request.name || request.url, method: request.method as ApiRequest['method'], url: request.url,
       params: parseParamsFromUrl(request.url), headers: [...defaults, ...manualHeaders],
       auth: { ...DEFAULT_AUTH, ...(request.bearer ? { type: 'bearer' as const, bearerToken: request.bearer } : {}) },
@@ -143,18 +172,23 @@ export async function importDesktopCollection() {
 }
 
 export async function exportDesktopCollection(id: string, folders: CollectionFolder[], requests: ApiRequest[]) {
-  const selected = folders.find(folder => folder.id === id);
+  const byId = new Map(folders.map(folder => [folder.id, folder]));
+  const selected = byId.get(id);
   if (!selected) return;
-  const root = folders.find(folder => folder.id === selected.desktopParent) ?? selected;
-  const children = folders.filter(folder => folder.desktopParent === root.id);
-  const ids = new Map([[root.id, ''], ...children.map(folder => [folder.id, folder.desktopPath ?? ''] as [string, string])]);
+  const root = folderAncestors(id, byId)[0] ?? selected;
+  const ids = new Map([[root.id, '']]);
+  for (const folder of folders) {
+    const ancestors = folderAncestors(folder.id, byId);
+    if (ancestors[0]?.id !== root.id) continue;
+    ids.set(folder.id, [...ancestors.slice(1), folder].map(item => item.name).join('/'));
+  }
   const profile = root.collectionProfiles;
   const variables = profile?.[profile.active].filter(item => item.enabled && item.key.trim())
     .map(item => `${item.key}=${item.currentValue ?? item.initialValue}`).join('\n');
   const collection = {
     headers: '', variables: '', expected_status: '', ...root.desktopCollection,
     ...(variables === undefined ? {} : { variables }),
-    name: root.name, docs: root.description, folders: children.map(folder => folder.desktopPath ?? '').filter(Boolean),
+    name: root.name, docs: root.description, folders: [...ids.values()].filter(Boolean),
   };
   return invoke<string | null>('export_collection', {
     collection,

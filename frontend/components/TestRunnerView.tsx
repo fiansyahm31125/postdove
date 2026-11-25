@@ -24,6 +24,7 @@ import {
   formatBytes,
   resolveRequestPayload,
 } from '../utils/httpUtils';
+import { folderAncestors } from '../utils/folderTree';
 import { getStatusColorClasses, MethodBadge } from './MethodBadge';
 
 interface TestRunnerViewProps {
@@ -48,10 +49,20 @@ export function TestRunnerView({
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [progressIndex, setProgressIndex] = useState<number>(0);
 
-  const targetRequests = useMemo(
-    () => requests.filter((r) => r.folderId === selectedFolderId),
-    [requests, selectedFolderId]
-  );
+  const folderById = useMemo(() => new Map(folders.map(folder => [folder.id, folder])), [folders]);
+  const requestsByFolder = useMemo(() => {
+    const grouped = new Map<string, ApiRequest[]>();
+    for (const request of requests) {
+      const ids = [request.folderId, ...folderAncestors(request.folderId, folderById).map(folder => folder.id)];
+      for (const id of ids) {
+        const group = grouped.get(id) ?? [];
+        group.push(request);
+        grouped.set(id, group);
+      }
+    }
+    return grouped;
+  }, [folderById, requests]);
+  const targetRequests = requestsByFolder.get(selectedFolderId) ?? [];
 
   const summary = useMemo(() => {
     const total = results.length;
@@ -195,12 +206,13 @@ export function TestRunnerView({
         <div className="p-3.5 space-y-4 flex-1 overflow-y-auto">
           <div className="space-y-1.5">
             <label className="block text-[11px] font-semibold text-ui-secondary">
-              Target Collection
+              Collection or folder
             </label>
             <div className="space-y-1.5">
               {folders.map((f) => {
-                const count = requests.filter((r) => r.folderId === f.id).length;
+                const count = requestsByFolder.get(f.id)?.length ?? 0;
                 const active = f.id === selectedFolderId;
+                const path = [...folderAncestors(f.id, folderById), f].map(folder => folder.name).join(' / ');
                 return (
                   <button
                     key={f.id}
@@ -217,7 +229,7 @@ export function TestRunnerView({
                   >
                     <span className="inline-flex items-center gap-2 min-w-0">
                       <Folder className="w-3.5 h-3.5 shrink-0 text-ui-secondary" />
-                      <span className="text-[12px] font-medium truncate">{f.name}</span>
+                      <span title={path} className="text-[12px] font-medium truncate">{path}</span>
                     </span>
                     <span className="font-mono text-[11px] text-ui-muted tabular-nums shrink-0">
                       {count}

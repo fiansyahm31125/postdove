@@ -12,7 +12,6 @@ import {
   Globe,
   History,
   Menu,
-  Moon,
   Network,
   PanelLeft,
   Play,
@@ -22,7 +21,6 @@ import {
   Search,
   Send,
   Settings,
-  Sun,
   Unplug,
   X,
 } from 'lucide-react';
@@ -54,11 +52,13 @@ import {
   uid,
 } from './utils/httpUtils';
 import { METHOD_STYLES, MethodBadge } from './components/MethodBadge';
-import { executeDesktop, exportDesktopCollection, importDesktopCollection, localProfiles, requestProfile, saveDesktopWorkspace, type StudioWorkspace, type Theme } from './main';
+import { executeDesktop, exportDesktopCollection, importDesktopCollection, localProfiles, requestProfile, saveDesktopWorkspace, type StudioWorkspace } from './main';
+import { resolveTheme, THEMES, type Theme } from './themes';
 import { Sidebar } from './components/Sidebar';
 import { RequestPane } from './components/RequestPane';
 import { ResponsePane } from './components/ResponsePane';
 import { EnvironmentsView } from './components/EnvironmentsView';
+import { folderAncestors, MAX_FOLDER_DEPTH } from './utils/folderTree';
 import { TestRunnerView } from './components/TestRunnerView';
 import { HistoryView } from './components/HistoryView';
 import { CommandPalette, ImportCurlModal } from './components/CommandPalette';
@@ -75,7 +75,7 @@ function enabledVariable(variables: EnvironmentVariable[] | undefined, name: str
 }
 
 export default function App({ initial }: { initial: StudioWorkspace }) {
-  const [theme, setTheme] = useState<Theme>(initial.theme === 'light' ? 'light' : 'dark');
+  const [theme, setTheme] = useState<Theme>(() => resolveTheme(initial.theme));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsDialog = useRef<HTMLDialogElement>(null);
   useLayoutEffect(() => {
@@ -228,8 +228,10 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
     [folders, activeRequest]
   );
 
+  const folderById = useMemo(() => new Map(folders.map(folder => [folder.id, folder])), [folders]);
+
   function collectionRoot(id: string) {
-    return folders.find(folder => folder.id === id)?.desktopParent ?? id;
+    return folderAncestors(id, folderById)[0]?.id ?? id;
   }
 
   function profilesForCollection(root: string): CollectionVariableProfiles {
@@ -426,28 +428,49 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
     [handleCloseTab, requests, markChange]
   );
 
-  const handleCreateFolder = useCallback((name: string) => {
-    markChange("Create collection");
+  function handleCreateFolder(name: string, parent?: string) {
+    const action = parent ? 'Create folder' : 'Create collection';
+    if (parent) {
+      const detail = !folderById.has(parent) ? 'The parent folder no longer exists.'
+        : name.includes('/') ? "Folder names cannot contain '/'."
+        : folders.some(folder => folder.desktopParent === parent && folder.name === name) ? 'This folder already has a subfolder with that name.'
+        : folderAncestors(parent, folderById).length >= MAX_FOLDER_DEPTH ? 'The maximum folder depth is 32.'
+        : undefined;
+      if (detail) {
+        reportResult({ action, ok: false, detail });
+        return false;
+      }
+    }
+    markChange(action);
     setFolders((prev) => [
       ...prev,
-      { id: uid('col'), name, description: 'Custom API collection', collectionProfiles: localProfiles() },
+      parent
+        ? { id: uid('folder'), name, description: '', desktopParent: parent }
+        : { id: uid('col'), name, description: 'Custom API collection', collectionProfiles: localProfiles() },
     ]);
-  }, [markChange]);
+    return true;
+  }
 
-  const handleDeleteFolder = useCallback((folderId: string) => {
-    if (folders.length <= 1 || !folders.some(folder => folder.id === folderId)) return;
+  function handleDeleteFolder(folderId: string) {
+    const folder = folderById.get(folderId);
+    if (folders.length <= 1 || !folder) return;
+    if (folder.desktopParent && folders.some(item => item.desktopParent === folderId)) {
+      reportResult({ action: 'Delete folder', ok: false, detail: 'Remove its subfolders before deleting this folder.' });
+      return;
+    }
     const remaining = folders.filter(folder => folder.id !== folderId).map(folder =>
       folder.desktopParent === folderId ? { ...folder, desktopParent: undefined,
         collectionProfiles: profilesForCollection(folderId) } : folder);
-    const fallback = remaining[0];
-    markChange("Delete collection");
+    const fallback = remaining.find(item => item.id === folder.desktopParent)
+      ?? remaining.find(item => !item.desktopParent)!;
+    markChange(folder.desktopParent ? 'Delete folder' : 'Delete collection');
     setFolders(remaining);
     const update = (request: ApiRequest) => request.folderId === folderId
       ? { ...request, folderId: fallback.id, ...requestProfile(fallback.collectionProfiles ?? profilesForCollection(collectionRoot(fallback.id))) }
       : request;
     setRequests(current => current.map(update));
     setDrafts(current => Object.fromEntries(Object.entries(current).map(([id, request]) => [id, update(request)])));
-  }, [folders, markChange]);
+  }
 
   const handleImportCurl = useCallback(
     (curlText: string): string | null => {
@@ -742,7 +765,7 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
   ];
 
   return (
-    <div className="h-screen w-screen flex flex-col overflow-hidden bg-ui-canvas text-ui-ink">
+    <div className="postdove-shell h-screen w-screen flex flex-col overflow-hidden bg-ui-canvas text-ui-ink">
       {/* Top IDE Bar */}
       <header className="h-[42px] px-3 bg-ui-surface border-b border-ui-border flex items-center justify-between gap-4 shrink-0 z-30">
         {/* Left: Brand & Screen Navigation */}
@@ -1312,7 +1335,7 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
             <span>{displayedEnv?.name}</span>
           </button>
           <span className="hidden sm:inline font-mono text-ui-muted tabular-nums">
-            {requests.length} endpoints · {folders.length} collections
+            {requests.length} endpoints · {folders.filter(folder => !folder.desktopParent).length} collections
           </span>
         </div>
 
@@ -1334,27 +1357,29 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
         ref={settingsDialog}
         aria-labelledby="settings-title"
         onClose={() => setSettingsOpen(false)}
-        className="m-auto w-[calc(100%-2rem)] max-w-sm rounded-lg border border-ui-border bg-ui-surface p-5 text-ui-ink ide-shadow backdrop:bg-black/65"
+        className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-lg border border-ui-border bg-ui-surface p-5 text-ui-ink ide-shadow backdrop:bg-black/65"
       >
         <h2 id="settings-title" className="text-base font-semibold">Settings</h2>
         <fieldset className="mt-4">
           <legend className="text-sm font-medium">Appearance</legend>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            {([
-              { value: 'dark', label: 'Dark', Icon: Moon },
-              { value: 'light', label: 'Light', Icon: Sun },
-            ] as const).map(({ value, label, Icon }) => (
-              <label key={value} className="flex cursor-pointer items-center gap-2 rounded-md border border-ui-border bg-ui-canvas p-3 hover:bg-ui-hover has-checked:border-ui-accent has-checked:bg-ui-accent/10">
-                <input
-                  type="radio"
-                  name="theme"
-                  value={value}
-                  checked={theme === value}
-                  onChange={() => setTheme(value)}
-                  className="accent-ui-accent"
-                />
-                <Icon className="h-4 w-4 text-ui-secondary" aria-hidden="true" />
-                {label}
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {THEMES.map(({ value, label }) => (
+              <label key={value} className="cursor-pointer rounded-md border border-ui-border bg-ui-canvas p-2 hover:bg-ui-hover has-checked:border-ui-accent has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ui-accent">
+                <span className="theme-preview" data-theme={value} aria-hidden="true">
+                  <span className="theme-preview-sidebar" />
+                  <span className="theme-preview-editor"><i /><i /><i /></span>
+                </span>
+                <span className="mt-2 flex items-center justify-between gap-1 text-[12px] font-medium">
+                  {label}
+                  <input
+                    type="radio"
+                    name="theme"
+                    value={value}
+                    checked={theme === value}
+                    onChange={() => setTheme(value)}
+                    className="shrink-0 accent-ui-accent"
+                  />
+                </span>
               </label>
             ))}
           </div>

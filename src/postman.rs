@@ -218,6 +218,13 @@ pub fn export(collection: &Collection, requests: &[&Request]) -> Result<String, 
     }
 
     let mut items = root["item"].as_array().cloned().unwrap_or_default();
+    let paths: BTreeSet<&str> = collection
+        .folders
+        .iter()
+        .map(String::as_str)
+        .chain(requests.iter().map(|request| request.folder.as_str()))
+        .collect();
+    retain_folder_metadata(&mut items, "", &paths);
     for path in &collection.folders {
         folder_items(&mut items, path);
     }
@@ -231,6 +238,32 @@ pub fn export(collection: &Collection, requests: &[&Request]) -> Result<String, 
     }
     root["item"] = Value::Array(items);
     serde_json::to_string_pretty(&root).map_err(|error| error.to_string())
+}
+
+fn retain_folder_metadata(items: &mut Vec<Value>, parent: &str, paths: &BTreeSet<&str>) {
+    items.retain_mut(|item| {
+        let Some(name) = item["name"].as_str() else {
+            return false;
+        };
+        let path = if parent.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{parent}/{name}")
+        };
+        let Some(children) = item["item"].as_array_mut() else {
+            return false;
+        };
+        let prefix = format!("{path}/");
+        let used = paths.contains(path.as_str())
+            || paths
+                .range(prefix.as_str()..)
+                .next()
+                .is_some_and(|candidate| candidate.starts_with(&prefix));
+        if used {
+            retain_folder_metadata(children, &path, paths);
+        }
+        used
+    });
 }
 
 fn folder_items<'a>(items: &'a mut Vec<Value>, path: &str) -> &'a mut Vec<Value> {
@@ -328,5 +361,20 @@ mod tests {
             imported[0].postman_item.as_ref().unwrap()["event"],
             document["item"][0]["item"][0]["item"][0]["event"]
         );
+    }
+
+    #[test]
+    fn export_omits_deleted_imported_subfolder() {
+        let document = json!({
+            "info": {"name": "Demo", "schema": SCHEMA},
+            "item": [{"name": "Outer", "description": "Keep this", "item": [
+                {"name": "Deleted", "item": []}
+            ]}]
+        });
+        let (mut collection, _) = import(&document.to_string()).unwrap();
+        collection.folders = vec!["Outer".into()];
+        let exported: Value = serde_json::from_str(&export(&collection, &[]).unwrap()).unwrap();
+        assert_eq!(exported["item"][0]["description"], "Keep this");
+        assert_eq!(exported["item"][0]["item"], json!([]));
     }
 }

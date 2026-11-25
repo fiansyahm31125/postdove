@@ -425,7 +425,9 @@ fn public_snapshot(workspace: &Value) -> Value {
         .as_array()
         .into_iter()
         .flatten()
-        .map(|folder| json!({"id": folder["id"], "name": folder["name"]}))
+        .map(|folder| json!({
+            "id": folder["id"], "name": folder["name"], "desktopParent": folder["desktopParent"]
+        }))
         .collect();
     let requests: Vec<_> = workspace["requests"].as_array().into_iter().flatten().map(|request| {
         let names = |field: &str| request[field].as_array().into_iter().flatten()
