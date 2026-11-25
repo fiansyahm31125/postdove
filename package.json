@@ -4,10 +4,26 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite frontend --host 127.0.0.1 --port 1420 --strictPort",
-    "build": "tsc --noEmit && vite build frontend --outDir ../dist --emptyOutDir",
+    "dev": "vite frontend --config vite.config.ts --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "tsc --noEmit && vite build frontend --config vite.config.ts --outDir ../dist --emptyOutDir",
     "tauri": "tauri"
   },
-  "dependencies": { "@tauri-apps/api": "^2" },
-  "devDependencies": { "@tauri-apps/cli": "^2", "typescript": "^5.9.3", "vite": "^6.4.0" }
+  "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@tauri-apps/api": "^2",
+    "lucide-react": "^0.546.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19.3.1",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.0"
+  }
 }

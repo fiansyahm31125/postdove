@@ -1,0 +1,181 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@theme inline {
+  --color-ui-canvas: var(--ui-canvas);
+  --color-ui-surface: var(--ui-surface);
+  --color-ui-elevated: var(--ui-elevated);
+  --color-ui-hover: var(--ui-hover);
+  --color-ui-border: var(--ui-border);
+  --color-ui-ink: var(--ui-ink);
+  --color-ui-secondary: var(--ui-secondary);
+  --color-ui-muted: var(--ui-muted);
+  --color-ui-accent: var(--ui-accent);
+  --color-ui-blue: var(--ui-blue);
+  --color-ui-green: var(--ui-green);
+  --color-ui-danger: var(--ui-danger);
+  --color-ui-amber: var(--ui-amber);
+  --color-ui-accent-hover: var(--ui-accent-hover);
+  --color-ui-string: var(--ui-string);
+  --color-ui-number: var(--ui-number);
+  --color-ui-key: var(--ui-key);
+  --color-ui-sky: var(--ui-sky);
+  --color-ui-error-text: var(--ui-error-text);
+  --color-ui-on-accent: var(--ui-on-accent);
+  --color-ui-on-accent-alt: var(--ui-on-accent-alt);
+  --color-ui-accent-soft: var(--ui-accent-soft);
+  --color-ui-purple: var(--ui-purple);
+  --color-ui-strong: var(--ui-strong);
+  --color-ui-subtle-ink: var(--ui-subtle-ink);
+  --color-ui-scroll-hover: var(--ui-scroll-hover);
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --ui-canvas: #121316;
+    --ui-surface: #1A1C20;
+    --ui-elevated: #22252A;
+    --ui-hover: #282B31;
+    --ui-border: #2E323A;
+    --ui-ink: #F3F4F6;
+    --ui-secondary: #9CA3AF;
+    --ui-muted: #6B7280;
+    --ui-accent: #FF6C37;
+    --ui-blue: #3B82F6;
+    --ui-green: #10B981;
+    --ui-danger: #F43F5E;
+    --ui-amber: #F59E0B;
+    --ui-accent-hover: #FF7D4D;
+    --ui-string: #4EDEA3;
+    --ui-number: #FFB59D;
+    --ui-key: #93C5FD;
+    --ui-sky: #38BDF8;
+    --ui-error-text: #FFB4AB;
+    --ui-on-accent: #22120C;
+    --ui-on-accent-alt: #23130E;
+    --ui-accent-soft: #FF926F;
+    --ui-purple: #A855F7;
+    --ui-strong: #FFFFFF;
+    --ui-subtle-ink: #E2E2E7;
+    --ui-scroll-hover: #424752;
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --ui-canvas: #F7F8FA;
+    --ui-surface: #FFFFFF;
+    --ui-elevated: #EBEEF3;
+    --ui-hover: #E1E6EE;
+    --ui-border: #CDD4DF;
+    --ui-ink: #192231;
+    --ui-secondary: #46556A;
+    --ui-muted: #59687D;
+    --ui-accent: #AC3613;
+    --ui-blue: #2457A9;
+    --ui-green: #08734D;
+    --ui-danger: #B62344;
+    --ui-amber: #895200;
+    --ui-accent-hover: #902B0E;
+    --ui-string: #08734D;
+    --ui-number: #9A3E18;
+    --ui-key: #2357A7;
+    --ui-sky: #146183;
+    --ui-error-text: #9D2B25;
+    --ui-on-accent: #FFFFFF;
+    --ui-on-accent-alt: #FFFFFF;
+    --ui-accent-soft: #97330F;
+    --ui-purple: #7534A7;
+    --ui-strong: #121927;
+    --ui-subtle-ink: #273445;
+    --ui-scroll-hover: #A3AFBF;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: var(--ui-canvas);
+    color: var(--ui-ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 20px;
+  }
+
+  /* Precision slim scrollbars */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--ui-border);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--ui-scroll-hover);
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.ide-shadow {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+/* Custom precision 14x14 checkbox */
+.ide-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background-color: var(--ui-canvas);
+  border: 1px solid var(--ui-border);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+  flex-shrink: 0;
+}
+
+.ide-checkbox:hover {
+  border-color: var(--ui-muted);
+}
+
+.ide-checkbox:checked {
+  background-color: var(--ui-accent);
+  border-color: var(--ui-accent);
+}
+
+.ide-checkbox:checked::after {
+  content: "";
+  width: 8px;
+  height: 5px;
+  border-left: 1.75px solid #FFFFFF;
+  border-bottom: 1.75px solid #FFFFFF;
+  transform: rotate(-45deg) translate(0.5px, -0.5px);
+}
+
+.ide-checkbox:focus-visible {
+  outline: 1px solid var(--ui-accent);
+  outline-offset: 1px;
+}

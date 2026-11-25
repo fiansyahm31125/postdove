@@ -1,0 +1,62 @@
+[
+  {
+    "id": "pi_3Qx8L2Kp9M1a4Z8v",
+    "object": "payment_intent",
+    "amount": 49900,
+    "currency": "usd",
+    "status": "succeeded",
+    "customer": "cus_N8v2Lm94Pq1rT",
+    "payment_method": "pm_card_visa_4242",
+    "description": "Enterprise API Cluster — Monthly Seat Allocation (12 seats)",
+    "created_at": "2026-11-24T14:22:18Z",
+    "metadata": {
+      "region": "us-west-2",
+      "invoice_id": "inv_2026_1104"
+    }
+  },
+  {
+    "id": "pi_3Qx8K9Kp9M1a4Z1c",
+    "object": "payment_intent",
+    "amount": 12500,
+    "currency": "usd",
+    "status": "requires_capture",
+    "customer": "cus_K4m8Rt21Vx9wQ",
+    "payment_method": "pm_card_mastercard_5555",
+    "description": "Dedicated Throughput Burst Pack — 5M requests",
+    "created_at": "2026-11-24T13:05:44Z",
+    "metadata": {
+      "region": "eu-central-1",
+      "invoice_id": "inv_2026_1103"
+    }
+  },
+  {
+    "id": "pi_3Qx7Z4Kp9M1a4Y7b",
+    "object": "payment_intent",
+    "amount": 8900,
+    "currency": "eur",
+    "status": "succeeded",
+    "customer": "cus_P9x1Bn77Yz3cM",
+    "payment_method": "pm_sepa_debit_8912",
+    "description": "Observability Retention Add-on (90 days)",
+    "created_at": "2026-11-24T10:49:12Z",
+    "metadata": {
+      "region": "eu-west-1",
+      "invoice_id": "inv_2026_1102"
+    }
+  },
+  {
+    "id": "pi_3Qx7M1Kp9M1a4W2d",
+    "object": "payment_intent",
+    "amount": 240000,
+    "currency": "usd",
+    "status": "processing",
+    "customer": "cus_R2v6Df45Hj8kL",
+    "payment_method": "pm_us_bank_ach_1029",
+    "description": "Annual Dedicated VPC Peering Contract",
+    "created_at": "2026-11-23T19:31:05Z",
+    "metadata": {
+      "region": "us-east-1",
+      "invoice_id": "inv_2026_1101"
+    }
+  }
+]

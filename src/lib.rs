@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod collection;
 pub mod postman;
+pub mod studio;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -41,6 +42,7 @@ pub struct Response {
     pub elapsed_ms: u128,
     pub headers: String,
     pub body: String,
+    pub raw_body: String,
     pub bytes: usize,
     pub truncated: bool,
 }
@@ -183,16 +185,18 @@ pub async fn send(request: Request) -> Result<Response, String> {
     let elapsed_ms = start.elapsed().as_millis();
     let truncated = bytes.len() > LIMIT;
     bytes.truncate(LIMIT);
+    let raw_body = String::from_utf8_lossy(&bytes).into_owned();
     let body = if !truncated && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
         serde_json::to_string_pretty(&json).map_err(|error| error.to_string())?
     } else {
-        String::from_utf8_lossy(&bytes).into_owned()
+        raw_body.clone()
     };
     Ok(Response {
         status,
         elapsed_ms,
         headers,
         body,
+        raw_body,
         bytes: bytes.len(),
         truncated,
     })

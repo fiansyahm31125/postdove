@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod lan;
+
+use postdove::studio::{Sandbox, StudioRequest, StudioResponse};
 use postdove::{Request, Response, collection::Collection, postman, send};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -37,12 +40,16 @@ fn write_workspace(path: &Path, mut workspace: Workspace) -> Result<(), String> 
     for request in &mut workspace.requests {
         request.bearer.clear();
     }
+    write_json(path, &workspace)
+}
+
+fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or("Workspace path has no parent directory.")?;
     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
-    serde_json::to_writer(&mut file, &workspace).map_err(|error| error.to_string())?;
+    serde_json::to_writer(&mut file, value).map_err(|error| error.to_string())?;
     file.as_file()
         .sync_all()
         .map_err(|error| error.to_string())?;
@@ -188,15 +195,62 @@ async fn export_collection(
     Ok(Some(file.path().display().to_string()))
 }
 
+fn studio_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(path(app)?.with_file_name("studio-workspace.json"))
+}
+
+#[tauri::command]
+fn load_studio(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    match std::fs::read(studio_path(&app)?) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| error.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn save_studio(app: AppHandle, workspace: serde_json::Value) -> Result<(), String> {
+    write_json(&studio_path(&app)?, &workspace)
+}
+
+#[tauri::command]
+async fn execute_studio(
+    sandbox: tauri::State<'_, Sandbox>,
+    request: StudioRequest,
+) -> Result<StudioResponse, String> {
+    sandbox.execute(request).await
+}
+
 fn main() {
     tauri::Builder::default()
+        .manage(Sandbox::default())
+        .setup(|app| {
+            let workspace = studio_path(app.handle()).map_err(std::io::Error::other)?;
+            let directory = app.path().app_data_dir()?.join("lan");
+            let lan = lan::Lan::load(directory, workspace).map_err(std::io::Error::other)?;
+            app.manage(lan);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             load_workspace,
+            load_studio,
+            save_studio,
+            execute_studio,
             save_workspace,
             send_request,
             import_collection,
             export_collection,
-            collection_json
+            collection_json,
+            lan::lan_status,
+            lan::lan_host_start,
+            lan::lan_host_stop,
+            lan::lan_revoke,
+            lan::lan_invite_info,
+            lan::lan_pair,
+            lan::lan_read,
+            lan::lan_forget
         ])
         .run(tauri::generate_context!())
         .expect("Could not start Postdove");

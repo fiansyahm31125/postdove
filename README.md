@@ -1,8 +1,9 @@
 # Postdove
 
 API client desktop untuk menyusun, mengirim, dan memeriksa request HTTP.
-Postdove memakai Tauri v2 dengan WebView bawaan OS, TypeScript dan CSS native
-yang dibundle melalui Vite 6, serta Rust dengan Tokio untuk request HTTP.
+Postdove memakai antarmuka Precision Slate dari Postdove Web, dibundle dengan Vite 6
+dan dijalankan melalui Tauri v2. Rust dan Tokio menangani request HTTP, sandbox
+lokal, dan penyimpanan workspace.
 
 ## Menjalankan
 
@@ -15,8 +16,8 @@ npm run tauri dev
 ```
 
 Untuk membuat paket desktop sesuai platform, jalankan `npm run tauri build`.
-Workspace versi lama dari eframe dibaca saat aplikasi Tauri dibuka sebelum
-workspace Tauri ada. Perubahan di aplikasi baru disimpan ke `workspace.json`
+Pada pembukaan pertama, data workspace lama dari Tauri atau eframe diimpor
+ke tampilan ini. Perubahan berikutnya disimpan ke `studio-workspace.json`
 di direktori data aplikasi Tauri.
 
 ## Penggunaan
@@ -72,13 +73,39 @@ Contoh argumen tool:
 
 ## Import dan export koleksi
 
-- Pilih **Import collection** di toolbar lalu buka JSON Postman Collection v2.1.
+- Pilih **Import Postman collection** di sidebar lalu buka JSON Postman Collection v2.1.
   Hasil impor muncul sebagai koleksi baru. Request dengan URL string atau
   `url.raw` dapat diimpor.
-- Pilih koleksi lalu klik **Export collection** untuk menyimpan file
-  `.postman_collection.json`. **Copy collection JSON** menyalin format yang sama.
+- Pilih koleksi lalu klik **Export Postman collection** untuk menyimpan file
+  `.postman_collection.json`.
 - Skrip dan contoh respons dari file impor dipertahankan saat ekspor ulang.
   Eksekusi request di Postdove menggunakan header dan raw body. Skrip Postman,
   auth Postman, environment Postdove, dan tes status Postdove tidak dikonversi
   menjadi perilaku yang setara di aplikasi tujuan. Token Bearer yang diisi
   sebagai field sesi Postdove tidak diekspor.
+
+## Berbagi workspace melalui LAN
+
+1. Di Postdove pada PC induk, buka **LAN Sharing** di status bar. Pilih alamat
+   IP privat PC itu beserta port, lalu klik **Start sharing**. Untuk mencoba
+   di PC yang sama, gunakan `127.0.0.1:46329`.
+2. Berikan undangan dan PIN kepada viewer melalui saluran tepercaya. Pada
+   viewer, tempel undangan, cocokkan fingerprint SHA-256 dengan layar induk,
+   lalu masukkan PIN dan pilih **Pair & open**.
+3. Viewer memakai **Open shared workspace** untuk membaca snapshot terbaru.
+   PC induk tetap mengelola koleksi melalui Workbench. Viewer hanya melihat
+   nama koleksi, nama request, metode, URL tanpa kredensial atau nilai query,
+   serta nama header dan parameter.
+
+Postdove membuat identitas TLS self-signed saat pertama dibuka. Pairing
+menggunakan TLS 1.3 dan PIN sekali pakai yang berlaku dua menit dengan maksimal
+lima percobaan. Koneksi berikutnya memverifikasi sertifikat induk yang dipin
+dan memakai token yang terikat ke fingerprint sertifikat viewer. Verifikasi
+fingerprint saat pairing pertama mengautentikasi induk tanpa memasang
+sertifikat ke penyimpanan kepercayaan OS.
+
+**Stop sharing** menutup listener. Pairing tetap berlaku saat host diaktifkan
+kembali dengan alamat yang sama. Gunakan **Revoke** di induk untuk mencabut
+semua pairing, atau **Forget host** di viewer untuk melupakan induk di PC itu.
+Apabila firewall Windows meminta izin, LAN Sharing menggunakan profil jaringan
+privat dan port yang ditampilkan.
