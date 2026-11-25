@@ -20,6 +20,49 @@ Pada pembukaan pertama, data workspace lama dari Tauri atau eframe diimpor
 ke tampilan ini. Perubahan berikutnya disimpan ke `studio-workspace.json`
 di direktori data aplikasi Tauri.
 
+## Build di macOS dan Linux
+
+Siapkan Node.js 24 dan Rust stable melalui rustup. Jalankan perintah dari
+direktori utama repo.
+
+### macOS
+
+Pasang Xcode Command Line Tools sekali dengan `xcode-select --install`, lalu
+jalankan perintah berikut di Mac. Gunakan Mac Apple Silicon untuk paket ARM64
+atau Mac Intel untuk paket x64.
+
+```bash
+npm ci
+npm run tauri build -- --bundles dmg -- --locked
+```
+
+Paket `.dmg` ada di `src-tauri/target/release/bundle/dmg/`. Untuk distribusi
+publik melalui Gatekeeper, siapkan
+[Apple Developer ID dan notarization](https://v2.tauri.app/distribute/sign/macos/).
+
+### Linux (Ubuntu atau Debian)
+
+Gunakan distro yang menyediakan WebKitGTK 4.1.
+
+```bash
+sudo apt update
+sudo apt install build-essential libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+npm ci
+npm run tauri build -- --bundles deb -- --locked
+```
+
+Paket `.deb` ada di `src-tauri/target/release/bundle/deb/`. Untuk dependensi
+distro lain, lihat [prasyarat Tauri](https://v2.tauri.app/start/prerequisites/).
+
+### Build dari GitHub Actions
+
+Atur nomor versi di `src-tauri/tauri.conf.json`, lalu masukkan perubahan ke
+branch default. Buka **Actions → Build Postdove for macOS and Linux → Run workflow**.
+Setelah semua build berhasil, workflow menerbitkan DMG untuk Apple Silicon dan
+Intel serta DEB untuk Linux x64 di **Releases → Postdove v<versi>**. ZIP rilis
+berisi folder `version/<versi>/` dengan ketiga installer.
+Gunakan nomor versi baru untuk rilis berikutnya.
+
 ## Penggunaan
 
 1. Pilih metode HTTP dan isi URL lengkap. Tambahkan query parameter langsung di URL.

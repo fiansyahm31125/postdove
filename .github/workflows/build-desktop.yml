@@ -1,0 +1,118 @@
+name: Build Postdove for macOS and Linux
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postdove-desktop-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      number: ${{ steps.version.outputs.number }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - id: version
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Use a numeric major.minor.patch version in tauri.conf.json."
+            exit 1
+          fi
+          echo "number=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            artifact: postdove-macos-arm64
+            bundles: dmg
+            packages: src-tauri/target/release/bundle/dmg/*.dmg
+          - runner: macos-15-intel
+            artifact: postdove-macos-x64
+            bundles: dmg
+            packages: src-tauri/target/release/bundle/dmg/*.dmg
+          - runner: ubuntu-22.04
+            artifact: postdove-linux-x64
+            bundles: deb
+            packages: src-tauri/target/release/bundle/deb/*.deb
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: npm ci
+      - name: Build installer
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }} -- --locked
+      - name: Stage installer
+        env:
+          VERSION: ${{ needs.version.outputs.number }}
+          PACKAGE_PATTERN: ${{ matrix.packages }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          shopt -s nullglob
+          packages=( $PACKAGE_PATTERN )
+          if (( ${#packages[@]} != 1 )); then
+            echo "::error::Expected exactly one installer for $ARTIFACT."
+            exit 1
+          fi
+          extension=${packages[0]##*.}
+          mkdir -p staged
+          cp "${packages[0]}" "staged/$ARTIFACT-$VERSION.$extension"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: staged/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.number }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: postdove-*
+          merge-multiple: true
+          path: version/${{ needs.version.outputs.number }}
+      - name: Archive version folder
+        run: zip -q -r "postdove-$VERSION.zip" "version/$VERSION"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" \
+            "version/$VERSION/postdove-macos-arm64-$VERSION.dmg" \
+            "version/$VERSION/postdove-macos-x64-$VERSION.dmg" \
+            "version/$VERSION/postdove-linux-x64-$VERSION.deb" \
+            "postdove-$VERSION.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Postdove v$VERSION" \
+            --generate-notes
