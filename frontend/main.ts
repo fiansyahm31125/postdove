@@ -3,7 +3,7 @@ import type { ApiEnvironment, ApiRequest, CollectionFolder, CollectionVariablePr
 import { INITIAL_ENVIRONMENTS, INITIAL_FOLDERS, INITIAL_REQUESTS } from './data/seedData';
 import { parseParamsFromUrl, uid } from './utils/httpUtils';
 import { folderAncestors } from './utils/folderTree';
-import type { Theme } from './themes';
+import type { Appearance } from './themes';
 
 const DEFAULT_AUTH = {
   type: 'none', bearerToken: '', apiKeyName: '', apiKeyValue: '',
@@ -16,7 +16,8 @@ export interface StudioWorkspace {
   environments: ApiEnvironment[];
   activeEnvId: string;
   history: HistoryEntry[];
-  theme?: Theme;
+  theme?: string;
+  appearance?: Appearance;
 }
 
 interface LegacyCollection {

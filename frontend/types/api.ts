@@ -76,6 +76,7 @@ export interface CollectionFolder {
   collectionProfiles?: CollectionVariableProfiles;
   desktopParent?: string;
   desktopPath?: string;
+  lanShared?: boolean;
 }
 
 export interface EnvironmentVariable {

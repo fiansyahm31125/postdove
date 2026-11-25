@@ -421,15 +421,23 @@ impl Lan {
 }
 
 fn public_snapshot(workspace: &Value) -> Value {
-    let folders: Vec<_> = workspace["folders"]
+    let published: Vec<_> = workspace["folders"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(|folder| json!({
-            "id": folder["id"], "name": folder["name"], "desktopParent": folder["desktopParent"]
-        }))
+        .filter(|folder| folder["lanShared"] == true && folder["id"].is_string())
         .collect();
-    let requests: Vec<_> = workspace["requests"].as_array().into_iter().flatten().map(|request| {
+    let ids: std::collections::HashSet<_> = published
+        .iter()
+        .filter_map(|folder| folder["id"].as_str())
+        .collect();
+    let folders: Vec<_> = published.iter().map(|folder| {
+        let parent = folder["desktopParent"].as_str().filter(|id| ids.contains(id));
+        json!({"id": folder["id"], "name": folder["name"], "desktopParent": parent})
+    }).collect();
+    let requests: Vec<_> = workspace["requests"].as_array().into_iter().flatten()
+        .filter(|request| request["folderId"].as_str().is_some_and(|id| ids.contains(id)))
+        .map(|request| {
         let names = |field: &str| request[field].as_array().into_iter().flatten()
             .filter(|item| item["enabled"] == true)
             .filter_map(|item| item["key"].as_str()).collect::<Vec<_>>();
@@ -696,11 +704,16 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path().join("studio-workspace.json");
         crate::write_json(&workspace, &json!({
-            "folders": [{"id":"demo","name":"Demo"}],
+            "folders": [
+                {"id":"demo","name":"Demo","desktopParent":"private-parent","lanShared":true},
+                {"id":"private-parent","name":"Private parent"},
+                {"id":"private-child","name":"Private child","desktopParent":"demo","lanShared":false}
+            ],
             "requests": [{"id":"r","folderId":"demo","name":"Health","method":"GET",
                 "url":"https://user:password@example.com/health?token=hidden",
                 "bodyContent":"private body","headers":[{"key":"Authorization","value":"secret","enabled":true}],
-                "params":[{"key":"token","value":"secret","enabled":true}]}],
+                "params":[{"key":"token","value":"secret","enabled":true}]},
+                {"id":"private-request","folderId":"private-child","name":"Private request","url":"https://example.com/private"}],
             "environments": [{"name":"private","variables":[{"currentValue":"secret"}]}]
         })).unwrap();
         let host = Lan::load(directory.path().join("host"), workspace.clone()).unwrap();
@@ -793,6 +806,8 @@ mod tests {
             panic!("viewer did not receive a snapshot")
         };
         assert_eq!(snapshot["requests"][0]["url"], "https://example.com/health");
+        assert_eq!(snapshot["folders"], json!([{"id":"demo","name":"Demo","desktopParent":null}]));
+        assert_eq!(snapshot["requests"].as_array().unwrap().len(), 1);
         assert_eq!(snapshot["requests"][0]["headers"], json!(["Authorization"]));
         assert_eq!(snapshot["requests"][0]["parameters"], json!(["token"]));
         let wire = snapshot.to_string();
@@ -814,7 +829,12 @@ mod tests {
 
         crate::write_json(
             &workspace,
-            &json!({"folders":[{"id":"demo","name":"Updated"}]}),
+            &json!({
+                "folders":[{"id":"demo","name":"Demo","lanShared":false},
+                    {"id":"new","name":"Newly shared","lanShared":true}],
+                "requests":[{"id":"r","folderId":"demo","name":"Health"},
+                    {"id":"r2","folderId":"new","name":"Status"}]
+            }),
         )
         .unwrap();
         let Reply::Workspace { workspace } = viewer
@@ -829,7 +849,10 @@ mod tests {
         else {
             panic!("viewer did not get the updated workspace")
         };
-        assert_eq!(workspace["folders"][0]["name"], "Updated");
+        assert_eq!(workspace["folders"].as_array().unwrap().len(), 1);
+        assert_eq!(workspace["folders"][0]["name"], "Newly shared");
+        assert_eq!(workspace["requests"].as_array().unwrap().len(), 1);
+        assert_eq!(workspace["requests"][0]["name"], "Status");
 
         let reloaded = Lan::load(directory.path().join("host"), host.workspace.clone()).unwrap();
         let restarted = reloaded.host.lock().await;

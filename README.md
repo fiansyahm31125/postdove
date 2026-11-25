@@ -135,10 +135,14 @@ Contoh argumen tool:
 2. Berikan undangan dan PIN kepada viewer melalui saluran tepercaya. Pada
    viewer, tempel undangan, cocokkan fingerprint SHA-256 dengan layar induk,
    lalu masukkan PIN dan pilih **Pair & open**.
-3. Viewer memakai **Open shared workspace** untuk membaca snapshot terbaru.
-   PC induk tetap mengelola koleksi melalui Workbench. Viewer hanya melihat
-   nama koleksi, nama request, metode, URL tanpa kredensial atau nilai query,
-   serta nama header dan parameter.
+3. Pada PC induk, klik ikon jaringan di baris koleksi atau folder yang ingin
+   dibagikan. Ikon berubah hijau saat folder online. Setiap subfolder memiliki
+   pengaturan berbagi sendiri. Klik lagi untuk berhenti membagikan folder itu.
+4. Viewer melihat folder dengan tanda **LAN** di **Collections → Shared
+   workspace · Read-only**. Daftar diperbarui otomatis saat viewer terhubung.
+   Panel **LAN Sharing** juga punya tombol **Open shared workspace** untuk
+   memuat ulang secara manual. Viewer melihat nama folder, nama request,
+   metode, URL tanpa kredensial atau nilai query, serta nama header dan parameter.
 
 Postdove membuat identitas TLS self-signed saat pertama dibuka. Pairing
 menggunakan TLS 1.3 dan PIN sekali pakai yang berlaku dua menit dengan maksimal

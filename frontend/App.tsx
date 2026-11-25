@@ -2,7 +2,7 @@ import { isWriteMethod, OperationResultDialog, type OperationResult } from './co
 import { CollectionVariablesDialog } from './components/CollectionVariablesDialog';
 import { VariableEditor, VariableValue } from './components/VariableEditor';
 import { invoke } from '@tauri-apps/api/core';
-import { LanPanel, type LanStatus } from './components/LanPanel';
+import { LanPanel, type LanStatus, type SharedSnapshot } from './components/LanPanel';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
@@ -53,7 +53,7 @@ import {
 } from './utils/httpUtils';
 import { METHOD_STYLES, MethodBadge } from './components/MethodBadge';
 import { executeDesktop, exportDesktopCollection, importDesktopCollection, localProfiles, requestProfile, saveDesktopWorkspace, type StudioWorkspace } from './main';
-import { resolveTheme, THEMES, type Theme } from './themes';
+import { COLOR_MODES, resolveAppearance, STYLES } from './themes';
 import { Sidebar } from './components/Sidebar';
 import { RequestPane } from './components/RequestPane';
 import { ResponsePane } from './components/ResponsePane';
@@ -75,12 +75,13 @@ function enabledVariable(variables: EnvironmentVariable[] | undefined, name: str
 }
 
 export default function App({ initial }: { initial: StudioWorkspace }) {
-  const [theme, setTheme] = useState<Theme>(() => resolveTheme(initial.theme));
+  const [appearance, setAppearance] = useState(() => resolveAppearance(initial.appearance, initial.theme));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsDialog = useRef<HTMLDialogElement>(null);
   useLayoutEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    document.documentElement.dataset.mode = appearance.mode;
+    document.documentElement.dataset.style = appearance.style;
+  }, [appearance]);
   const [activeScreen, setActiveScreen] = useState<ActiveScreen>('workbench');
   const [folders, setFolders] = useState<CollectionFolder[]>(initial.folders);
   const [requests, setRequests] = useState<ApiRequest[]>(initial.requests);
@@ -116,13 +117,37 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
   const [variableEdit, setVariableEdit] = useState<VariableEdit>();
   const [lanOpen, setLanOpen] = useState(false);
   const [lanSharing, setLanSharing] = useState<boolean>();
+  const [viewerAddress, setViewerAddress] = useState<string | null>(null);
+  const [sharedSnapshot, setSharedSnapshot] = useState<SharedSnapshot>();
   useEffect(() => {
     let current = true;
     invoke<LanStatus>('lan_status').then(status => {
-      if (current) setLanSharing(Boolean(status.hostAddress));
+      if (!current) return;
+      setLanSharing(Boolean(status.hostAddress));
+      setViewerAddress(status.viewerAddress);
     }).catch(() => {});
     return () => { current = false; };
   }, []);
+  useEffect(() => {
+    if (!viewerAddress) return;
+    let active = true;
+    let timer: number;
+    const refresh = async () => {
+      try {
+        const next = await invoke<SharedSnapshot>('lan_read');
+        if (active) setSharedSnapshot(next);
+      } catch {
+        if (active) setSharedSnapshot(undefined);
+      } finally {
+        if (active) timer = window.setTimeout(refresh, 5000);
+      }
+    };
+    void refresh();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [viewerAddress]);
   const [envMenuOpen, setEnvMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [importCurlOpen, setImportCurlOpen] = useState(false);
@@ -163,11 +188,11 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
   }, [reportResult]);
 
   useEffect(() => {
-    const state: StudioWorkspace = { folders, requests, environments, activeEnvId, history: history.slice(0, 60), theme };
+    const state: StudioWorkspace = { folders, requests, environments, activeEnvId, history: history.slice(0, 60), appearance };
     lastSnapshot.current = state;
     const changes = pendingChanges.current.splice(0);
     enqueueSave(state, changes);
-  }, [folders, requests, environments, activeEnvId, history, theme, enqueueSave]);
+  }, [folders, requests, environments, activeEnvId, history, appearance, enqueueSave]);
 
   const importCollection = async () => {
     try {
@@ -470,6 +495,13 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
       : request;
     setRequests(current => current.map(update));
     setDrafts(current => Object.fromEntries(Object.entries(current).map(([id, request]) => [id, update(request)])));
+  }
+
+  function toggleFolderSharing(folder: CollectionFolder) {
+    markChange(folder.lanShared ? 'Stop sharing folder' : 'Share folder over LAN');
+    setFolders(current => current.map(item => item.id === folder.id
+      ? { ...item, lanShared: !item.lanShared }
+      : item));
   }
 
   const handleImportCurl = useCallback(
@@ -781,11 +813,12 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
                 <Menu className="w-4 h-4" />
               </button>
             )}
-            <div className="w-5 h-5 rounded-[4px] bg-ui-accent flex items-center justify-center shrink-0">
-              <span className="font-mono text-[11px] font-bold text-white leading-none">P</span>
-            </div>
-            <span className="text-[14px] font-semibold tracking-[-0.02em] text-ui-ink whitespace-nowrap shrink-0">
-              Precision Slate
+            <span aria-label="PostDove" role="img" className="inline-flex items-center text-[15px] font-semibold tracking-[-0.02em] text-ui-ink whitespace-nowrap shrink-0">
+              <span aria-hidden="true">PostDo</span>
+              <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] shrink-0 text-ui-accent" fill="currentColor" aria-hidden="true">
+                <path d="M1.5 3.5c3.8 1.3 7.1 4 10.5 8.4l2.1-3.2c.8-1.2 1.9-1.5 3-1l2-1-.8 2.1c3-3.2 4.2-4.1 4.2-4.1-.9 4.4-3 7.9-7.3 10.2L12 21l-3.2-5.6C4.7 13.6 2.8 9.8 1.5 3.5Z" />
+              </svg>
+              <span aria-hidden="true">e</span>
             </span>
           </div>
 
@@ -925,6 +958,9 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
                   onDeleteRequest={handleDeleteRequest}
                   onCreateFolder={handleCreateFolder}
                   onDeleteFolder={handleDeleteFolder}
+                  onToggleFolderSharing={toggleFolderSharing}
+                  lanSharing={Boolean(lanSharing)}
+                  sharedSnapshot={viewerAddress ? sharedSnapshot : undefined}
                   onOpenImportCurl={() => setImportCurlOpen(true)}
                   onImportPostman={importCollection}
                   onExportPostman={exportCollection}
@@ -961,6 +997,9 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
                     onDeleteRequest={handleDeleteRequest}
                     onCreateFolder={handleCreateFolder}
                     onDeleteFolder={handleDeleteFolder}
+                    onToggleFolderSharing={toggleFolderSharing}
+                    lanSharing={Boolean(lanSharing)}
+                    sharedSnapshot={viewerAddress ? sharedSnapshot : undefined}
                     onOpenFolder={id => {
                       setMobileDrawerOpen(false);
                       setCollectionEdit(collectionRoot(id));
@@ -1000,7 +1039,7 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
                         {isActive && (
                           <span
                             aria-hidden="true"
-                            className="absolute top-0 left-0 right-0 h-[2px] bg-ui-accent"
+                            className="request-tab-indicator absolute top-0 left-0 right-0 h-[2px] bg-ui-accent"
                           />
                         )}
                         <MethodBadge method={req.method} compact />
@@ -1303,7 +1342,9 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
       />}
       {results[0] && <OperationResultDialog key={results[0].id} result={results[0]}
         onClose={() => setResults(current => current.slice(1))} />}
-      {lanOpen && <LanPanel onClose={() => setLanOpen(false)} onSharingChange={setLanSharing} reportResult={reportResult} />}
+      {lanOpen && <LanPanel onClose={() => setLanOpen(false)} onSharingChange={setLanSharing}
+        onViewerAddressChange={setViewerAddress} snapshot={viewerAddress ? sharedSnapshot : undefined}
+        onSnapshot={setSharedSnapshot} reportResult={reportResult} />}
       <footer className="h-[26px] px-3 bg-ui-surface border-t border-ui-border flex items-center justify-between text-[11px] text-ui-secondary select-none shrink-0">
         <div className="flex items-center gap-3">
           <button type="button" className="inline-flex shrink-0 items-center gap-1.5 hover:text-ui-ink"
@@ -1357,15 +1398,28 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
         ref={settingsDialog}
         aria-labelledby="settings-title"
         onClose={() => setSettingsOpen(false)}
-        className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-lg border border-ui-border bg-ui-surface p-5 text-ui-ink ide-shadow backdrop:bg-black/65"
+        className="appearance-dialog m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-lg border border-ui-border bg-ui-surface p-5 text-ui-ink ide-shadow backdrop:bg-black/65"
       >
         <h2 id="settings-title" className="text-base font-semibold">Settings</h2>
         <fieldset className="mt-4">
-          <legend className="text-sm font-medium">Appearance</legend>
+          <legend className="text-sm font-medium">Color mode</legend>
+          <div className="mt-2 inline-grid grid-cols-2 gap-1 rounded-md border border-ui-border bg-ui-canvas p-1">
+            {COLOR_MODES.map(({ value, label }) => (
+              <label key={value} className="appearance-choice flex cursor-pointer items-center gap-2 rounded px-3 py-1.5 hover:bg-ui-hover has-checked:bg-ui-elevated has-focus-visible:outline-2 has-focus-visible:outline-ui-accent">
+                <input type="radio" name="color-mode" value={value} checked={appearance.mode === value}
+                  onChange={() => setAppearance(current => ({ ...current, mode: value }))}
+                  className="accent-ui-accent" />
+                {label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <fieldset className="mt-4">
+          <legend className="text-sm font-medium">Style</legend>
           <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {THEMES.map(({ value, label }) => (
-              <label key={value} className="cursor-pointer rounded-md border border-ui-border bg-ui-canvas p-2 hover:bg-ui-hover has-checked:border-ui-accent has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ui-accent">
-                <span className="theme-preview" data-theme={value} aria-hidden="true">
+            {STYLES.map(({ value, label }) => (
+              <label key={value} className="appearance-choice cursor-pointer rounded-md border border-ui-border bg-ui-canvas p-2 hover:bg-ui-hover has-checked:border-ui-accent has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ui-accent">
+                <span className="theme-preview" data-mode={appearance.mode} data-style={value} aria-hidden="true">
                   <span className="theme-preview-sidebar" />
                   <span className="theme-preview-editor"><i /><i /><i /></span>
                 </span>
@@ -1373,10 +1427,10 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
                   {label}
                   <input
                     type="radio"
-                    name="theme"
+                    name="appearance-style"
                     value={value}
-                    checked={theme === value}
-                    onChange={() => setTheme(value)}
+                    checked={appearance.style === value}
+                    onChange={() => setAppearance(current => ({ ...current, style: value }))}
                     className="shrink-0 accent-ui-accent"
                   />
                 </span>

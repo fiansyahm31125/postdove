@@ -7,6 +7,7 @@ import {
   FolderOpen,
   FolderPlus,
   Import,
+  Network,
   Plus,
   Search,
   Trash2,
@@ -15,6 +16,7 @@ import {
 import type { ApiRequest, CollectionFolder } from '../types/api';
 import { folderAncestors } from '../utils/folderTree';
 import { MethodBadge } from './MethodBadge';
+import { SharedWorkspace, type SharedSnapshot } from './LanPanel';
 
 interface SidebarProps {
   folders: CollectionFolder[];
@@ -27,6 +29,9 @@ interface SidebarProps {
   onDeleteRequest: (id: string) => void;
   onCreateFolder: (name: string, parent?: string) => boolean;
   onDeleteFolder: (id: string) => void;
+  onToggleFolderSharing: (folder: CollectionFolder) => void;
+  lanSharing: boolean;
+  sharedSnapshot?: SharedSnapshot;
   onOpenImportCurl: () => void;
   onImportPostman?: () => void;
   onOpenFolder: (id: string) => void;
@@ -47,6 +52,9 @@ export function Sidebar({
   onDeleteRequest,
   onCreateFolder,
   onDeleteFolder,
+  onToggleFolderSharing,
+  lanSharing,
+  sharedSnapshot,
   onOpenImportCurl,
   onImportPostman,
   onOpenFolder,
@@ -127,6 +135,18 @@ export function Sidebar({
             {isCollapsed ? <Folder className="w-3.5 h-3.5 shrink-0 text-ui-secondary" />
               : <FolderOpen className="w-3.5 h-3.5 shrink-0 text-ui-secondary" />}
             <span className="truncate">{folder.name}</span>
+          </button>
+          <button
+            type="button"
+            aria-label={`Share ${folder.name} over LAN`}
+            aria-pressed={Boolean(folder.lanShared)}
+            title={folder.lanShared ? (lanSharing ? 'Online on LAN · Click to stop sharing' : 'Sharing enabled · Start LAN Sharing to go online') : 'Share this folder over LAN'}
+            onClick={() => onToggleFolderSharing(folder)}
+            className={`shrink-0 cursor-pointer rounded p-0.5 hover:bg-ui-border focus-visible:outline-ui-accent ${
+              folder.lanShared && lanSharing ? 'text-ui-green' : folder.lanShared ? 'text-ui-accent' : 'text-ui-muted hover:text-ui-ink'
+            }`}
+          >
+            <Network className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
           <span className="font-mono text-[10px] text-ui-muted tabular-nums group-hover:hidden">
             {folderRequests.length}
@@ -345,6 +365,7 @@ export function Sidebar({
       {/* Collection Tree */}
       <div className="flex-1 overflow-y-auto py-1.5">
         {folders.filter(folder => !folder.desktopParent || !byId.has(folder.desktopParent)).map(folder => renderFolder(folder, 0))}
+        {sharedSnapshot && !search.trim() && <SharedWorkspace snapshot={sharedSnapshot} compact />}
 
         {filteredRequests.length === 0 && search.trim() && (
           <div className="px-3 py-8 text-center">

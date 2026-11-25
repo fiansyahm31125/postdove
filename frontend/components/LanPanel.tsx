@@ -16,7 +16,7 @@ interface Offer {
   fingerprint: string;
   expiresInSeconds: number;
 }
-interface Snapshot {
+export interface SharedSnapshot {
   folders: { id: string; name: string; desktopParent?: string | null }[];
   requests: {
     id: string; folderId: string; name: string; method: string; url: string;
@@ -24,10 +24,15 @@ interface Snapshot {
   }[];
 }
 
-function renderSharedFolder(snapshot: Snapshot, folder: Snapshot['folders'][number]) {
-  return <details key={folder.id} open className="rounded border border-ui-border p-2">
-    <summary className="cursor-pointer font-semibold">{folder.name}</summary>
-    {snapshot.folders.filter(child => child.desktopParent === folder.id).map(child => renderSharedFolder(snapshot, child))}
+function renderSharedFolder(snapshot: SharedSnapshot, folder: SharedSnapshot['folders'][number], compact: boolean) {
+  return <details key={folder.id} open={!compact} className="mt-1 rounded border border-ui-border p-2">
+    <summary className="cursor-pointer break-words font-medium">
+      {folder.name}
+      <span className="ml-1.5 inline-flex items-center gap-1 align-middle text-[10px] text-ui-green" title="Shared over LAN · Read-only">
+        <Network className="h-3 w-3" aria-hidden="true" /> LAN
+      </span>
+    </summary>
+    {snapshot.folders.filter(child => child.desktopParent === folder.id).map(child => renderSharedFolder(snapshot, child, compact))}
     {snapshot.requests.filter(request => request.folderId === folder.id).map(request => <div key={request.id}
       className="mt-2 space-y-0.5 border-t border-ui-border pt-2">
       <div><span className="font-mono text-ui-accent-soft">{request.method}</span> {request.name}</div>
@@ -38,12 +43,27 @@ function renderSharedFolder(snapshot: Snapshot, folder: Snapshot['folders'][numb
   </details>;
 }
 
+export function SharedWorkspace({ snapshot, compact = false }: { snapshot: SharedSnapshot; compact?: boolean }) {
+  const ids = new Set(snapshot.folders.map(folder => folder.id));
+  return (
+    <section className={compact ? 'border-t border-ui-border px-2 py-2' : 'border-t border-ui-border p-4'} aria-label="Read-only workspace">
+      <h3 className="mb-1 text-[12px] font-semibold text-ui-ink">Shared workspace <span className="font-normal text-ui-secondary">· Read-only</span></h3>
+      {!snapshot.folders.length && <p className="text-[11px] text-ui-secondary">The host hasn’t shared any folders.</p>}
+      {snapshot.folders.filter(folder => !folder.desktopParent || !ids.has(folder.desktopParent))
+        .map(folder => renderSharedFolder(snapshot, folder, compact))}
+    </section>
+  );
+}
+
 const inputClass = 'min-w-0 rounded border border-ui-border bg-ui-canvas p-2 text-ui-ink';
 const buttonClass = 'rounded border border-ui-border bg-ui-elevated px-2.5 py-1.5 hover:bg-ui-hover disabled:opacity-40';
 
-export function LanPanel({ onClose, onSharingChange, reportResult }: {
+export function LanPanel({ onClose, onSharingChange, onViewerAddressChange, snapshot, onSnapshot, reportResult }: {
   onClose: () => void;
   onSharingChange: (active: boolean) => void;
+  onViewerAddressChange: (address: string | null) => void;
+  snapshot?: SharedSnapshot;
+  onSnapshot: (snapshot: SharedSnapshot | undefined) => void;
   reportResult: (result: OperationResult) => void;
 }) {
   const [status, setStatus] = useState<LanStatus>();
@@ -55,7 +75,6 @@ export function LanPanel({ onClose, onSharingChange, reportResult }: {
   const [inviteInfo, setInviteInfo] = useState<[string, string]>();
   const [confirmed, setConfirmed] = useState(false);
   const [pin, setPin] = useState('');
-  const [snapshot, setSnapshot] = useState<Snapshot>();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -64,6 +83,7 @@ export function LanPanel({ onClose, onSharingChange, reportResult }: {
     const next = await invoke<LanStatus>('lan_status');
     setStatus(next);
     onSharingChange(Boolean(next.hostAddress));
+    onViewerAddressChange(next.viewerAddress);
     return next;
   }
 
@@ -73,10 +93,11 @@ export function LanPanel({ onClose, onSharingChange, reportResult }: {
       if (!current) return;
       setStatus(next);
       onSharingChange(Boolean(next.hostAddress));
+      onViewerAddressChange(next.viewerAddress);
       setAddress(next.hostAddress ?? next.suggestedAddress);
     }).catch(error => { if (current) setError(String(error)); });
     return () => { current = false; };
-  }, [onSharingChange]);
+  }, [onSharingChange, onViewerAddressChange]);
 
   useEffect(() => {
     if (!expiresAt) return;
@@ -139,28 +160,28 @@ export function LanPanel({ onClose, onSharingChange, reportResult }: {
 
   function refresh() {
     void run(async () => {
-      setSnapshot(undefined);
-      setSnapshot(await invoke<Snapshot>('lan_read'));
+      onSnapshot(undefined);
+      onSnapshot(await invoke<SharedSnapshot>('lan_read'));
       await reloadStatus();
     });
   }
 
   function pair() {
     void run(async () => {
-      setSnapshot(undefined);
       try {
         await invoke('lan_pair', { invitation, pin });
       } catch (error) {
         reportResult({ action: 'Pair LAN viewer', ok: false, detail: String(error) });
         throw error;
       }
+      onSnapshot(undefined);
       reportResult({ action: 'Pair LAN viewer', ok: true });
       setPin('');
       setInvitation('');
       setInviteInfo(undefined);
       setConfirmed(false);
       await reloadStatus();
-      setSnapshot(await invoke<Snapshot>('lan_read'));
+      onSnapshot(await invoke<SharedSnapshot>('lan_read'));
     });
   }
 
@@ -179,7 +200,7 @@ export function LanPanel({ onClose, onSharingChange, reportResult }: {
         <div className="grid gap-3 p-4 sm:grid-cols-2">
           <section className="min-w-0 space-y-2 rounded border border-ui-border p-3">
             <h3 className="font-semibold">Host · CRUD</h3>
-            <p className="text-ui-secondary">Share collection and request names, methods, URLs, and field names. Query values, credentials, and bodies stay on this PC.</p>
+            <p className="text-ui-secondary">Use the LAN control on each folder to share its requests. Viewers receive request names, methods, URLs without query values, and field names.</p>
             <label className="grid gap-1 text-ui-secondary">LAN address and port
               <input className={inputClass} value={address} onChange={event => setAddress(event.target.value)}
                 placeholder="127.0.0.1:46329" disabled={Boolean(status?.hostAddress) || busy} />
@@ -226,7 +247,8 @@ export function LanPanel({ onClose, onSharingChange, reportResult }: {
                 <button type="button" className={buttonClass} disabled={busy} onClick={refresh}>Open shared workspace</button>
                 <button type="button" className={buttonClass} disabled={busy} onClick={() => void run(async () => {
                   await invoke('lan_forget');
-                  setSnapshot(undefined);
+                  onViewerAddressChange(null);
+                  onSnapshot(undefined);
                   await reloadStatus();
                 }, 'Forget LAN host')}>Forget host</button>
               </div>
@@ -253,12 +275,7 @@ export function LanPanel({ onClose, onSharingChange, reportResult }: {
         </div>
         {error && <p className="break-words px-4 pb-3 text-ui-error-text" role="alert">{error}</p>}
         {message && <p className="px-4 pb-3 text-ui-green" role="status">{message}</p>}
-        {snapshot && <section className="space-y-2 border-t border-ui-border p-4" aria-label="Read-only workspace">
-          <h3 className="font-semibold">Shared workspace · Read-only</h3>
-          {!snapshot.folders.length && <p className="text-ui-secondary">The host workspace has no collections.</p>}
-          {snapshot.folders.filter(folder => !snapshot.folders.some(parent => parent.id === folder.desktopParent))
-            .map(folder => renderSharedFolder(snapshot, folder))}
-        </section>}
+        {snapshot && <SharedWorkspace snapshot={snapshot} />}
       </section>
     </div>
   );
