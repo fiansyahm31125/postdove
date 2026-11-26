@@ -24,15 +24,15 @@ export interface SharedSnapshot {
   }[];
 }
 
-function renderSharedFolder(snapshot: SharedSnapshot, folder: SharedSnapshot['folders'][number], compact: boolean) {
+function renderSharedFolder(snapshot: SharedSnapshot, folder: SharedSnapshot['folders'][number], compact: boolean, source: 'LAN' | 'Online') {
   return <details key={folder.id} open={!compact} className="mt-1 rounded border border-ui-border p-2">
     <summary className="cursor-pointer break-words font-medium">
       {folder.name}
-      <span className="ml-1.5 inline-flex items-center gap-1 align-middle text-[10px] text-ui-green" title="Shared over LAN · Read-only">
-        <Network className="h-3 w-3" aria-hidden="true" /> LAN
+      <span className="ml-1.5 inline-flex items-center gap-1 align-middle text-[10px] text-ui-green" title={`Shared via ${source} · Read-only`}>
+        <Network className="h-3 w-3" aria-hidden="true" /> {source}
       </span>
     </summary>
-    {snapshot.folders.filter(child => child.desktopParent === folder.id).map(child => renderSharedFolder(snapshot, child, compact))}
+    {snapshot.folders.filter(child => child.desktopParent === folder.id).map(child => renderSharedFolder(snapshot, child, compact, source))}
     {snapshot.requests.filter(request => request.folderId === folder.id).map(request => <div key={request.id}
       className="mt-2 space-y-0.5 border-t border-ui-border pt-2">
       <div><span className="font-mono text-ui-accent-soft">{request.method}</span> {request.name}</div>
@@ -43,14 +43,14 @@ function renderSharedFolder(snapshot: SharedSnapshot, folder: SharedSnapshot['fo
   </details>;
 }
 
-export function SharedWorkspace({ snapshot, compact = false }: { snapshot: SharedSnapshot; compact?: boolean }) {
+export function SharedWorkspace({ snapshot, compact = false, source = 'LAN' }: { snapshot: SharedSnapshot; compact?: boolean; source?: 'LAN' | 'Online' }) {
   const ids = new Set(snapshot.folders.map(folder => folder.id));
   return (
-    <section className={compact ? 'border-t border-ui-border px-2 py-2' : 'border-t border-ui-border p-4'} aria-label="Read-only workspace">
-      <h3 className="mb-1 text-[12px] font-semibold text-ui-ink">Shared workspace <span className="font-normal text-ui-secondary">· Read-only</span></h3>
+    <section className={compact ? 'border-t border-ui-border px-2 py-2' : 'border-t border-ui-border p-4'} aria-label={source === 'LAN' ? 'Read-only workspace' : 'Online read-only workspace'}>
+      <h3 className="mb-1 text-[12px] font-semibold text-ui-ink">{source === 'LAN' ? 'Shared workspace' : 'Online folders'} <span className="font-normal text-ui-secondary">· Read-only</span></h3>
       {!snapshot.folders.length && <p className="text-[11px] text-ui-secondary">The host hasn’t shared any folders.</p>}
       {snapshot.folders.filter(folder => !folder.desktopParent || !ids.has(folder.desktopParent))
-        .map(folder => renderSharedFolder(snapshot, folder, compact))}
+        .map(folder => renderSharedFolder(snapshot, folder, compact, source))}
     </section>
   );
 }

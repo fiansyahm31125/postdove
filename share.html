@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Undangan Online Sharing · PostDove</title>
+  <style>
+    :root { color-scheme: dark; background: #121316; color: #f3f4f6; font: 16px/1.6 system-ui, sans-serif; }
+    body { margin: 0; }
+    main { width: min(100% - 2rem, 36rem); margin: 4rem auto; }
+    h1 { line-height: 1.2; }
+    a { color: #ffab89; }
+    input { box-sizing: border-box; width: 100%; padding: .75rem; background: #22252a; color: inherit; border: 1px solid #606775; border-radius: .35rem; }
+    li + li { margin-top: .5rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <a href="./">PostDove</a>
+    <h1>Buka folder yang dibagikan</h1>
+    <p id="repository" hidden></p>
+    <label for="invitation">Link undangan</label>
+    <input id="invitation" readonly>
+    <ol>
+      <li>Buka PostDove desktop dan pilih <strong>Online Sharing</strong>.</li>
+      <li>Salin link di atas ke kolom repository atau undangan. Kamu juga bisa memasukkan nama repository langsung.</li>
+      <li>Masukkan token GitHub milikmu yang memiliki akses baca ke repository privat, lalu klik <strong>Open shared folders</strong>.</li>
+    </ol>
+    <p>Masukkan token hanya di PostDove desktop. Folder akan muncul di <strong>Collections → Online folders · Read-only</strong>.</p>
+  </main>
+  <script>
+    const repository = new URLSearchParams(location.hash.slice(1)).get('repo');
+    const invitation = document.getElementById('invitation');
+    if (repository && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+      const description = document.getElementById('repository');
+      description.textContent = 'Repository: ' + repository;
+      description.hidden = false;
+      invitation.value = location.origin + location.pathname + '#' + new URLSearchParams({ repo: repository });
+      invitation.addEventListener('focus', () => invitation.select());
+    } else {
+      invitation.placeholder = 'Buka link undangan yang dikirim oleh induk.';
+    }
+  </script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod lan;
+mod online;
 
 use postdove::studio::{Sandbox, StudioRequest, StudioResponse};
 use postdove::{Request, Response, collection::Collection, postman, send};
@@ -226,6 +227,7 @@ async fn execute_studio(
 fn main() {
     tauri::Builder::default()
         .manage(Sandbox::default())
+        .manage(online::GoogleLogin::default())
         .setup(|app| {
             let workspace = studio_path(app.handle()).map_err(std::io::Error::other)?;
             let directory = app.path().app_data_dir()?.join("lan");
@@ -250,7 +252,12 @@ fn main() {
             lan::lan_invite_info,
             lan::lan_pair,
             lan::lan_read,
-            lan::lan_forget
+            lan::lan_forget,
+            online::online_publish,
+            online::online_read,
+            online::google_login,
+            online::google_profile,
+            online::google_logout
         ])
         .run(tauri::generate_context!())
         .expect("Could not start Postdove");

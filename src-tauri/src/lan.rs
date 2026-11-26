@@ -371,7 +371,7 @@ impl Lan {
 
     fn snapshot(&self) -> Result<Value, String> {
         let workspace: Value = read_json(&self.workspace)?.unwrap_or_else(|| json!({}));
-        Ok(public_snapshot(&workspace))
+        Ok(public_snapshot(&workspace, |folder| folder["lanShared"] == true))
     }
 
     async fn request(&self, invite: &Invite, message: &Message) -> Result<Reply, String> {
@@ -420,12 +420,12 @@ impl Lan {
     }
 }
 
-fn public_snapshot(workspace: &Value) -> Value {
+pub(crate) fn public_snapshot(workspace: &Value, shared: impl Fn(&Value) -> bool) -> Value {
     let published: Vec<_> = workspace["folders"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|folder| folder["lanShared"] == true && folder["id"].is_string())
+        .filter(|folder| folder["id"].is_string() && folder["name"].is_string() && shared(folder))
         .collect();
     let ids: std::collections::HashSet<_> = published
         .iter()
@@ -436,7 +436,9 @@ fn public_snapshot(workspace: &Value) -> Value {
         json!({"id": folder["id"], "name": folder["name"], "desktopParent": parent})
     }).collect();
     let requests: Vec<_> = workspace["requests"].as_array().into_iter().flatten()
-        .filter(|request| request["folderId"].as_str().is_some_and(|id| ids.contains(id)))
+        .filter(|request| request["id"].is_string() && request["name"].is_string()
+            && request["method"].is_string()
+            && request["folderId"].as_str().is_some_and(|id| ids.contains(id)))
         .map(|request| {
         let names = |field: &str| request[field].as_array().into_iter().flatten()
             .filter(|item| item["enabled"] == true)
@@ -833,7 +835,7 @@ mod tests {
                 "folders":[{"id":"demo","name":"Demo","lanShared":false},
                     {"id":"new","name":"Newly shared","lanShared":true}],
                 "requests":[{"id":"r","folderId":"demo","name":"Health"},
-                    {"id":"r2","folderId":"new","name":"Status"}]
+                    {"id":"r2","folderId":"new","name":"Status","method":"GET"}]
             }),
         )
         .unwrap();

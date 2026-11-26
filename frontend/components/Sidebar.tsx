@@ -32,6 +32,7 @@ interface SidebarProps {
   onToggleFolderSharing: (folder: CollectionFolder) => void;
   lanSharing: boolean;
   sharedSnapshot?: SharedSnapshot;
+  onlineSnapshot?: SharedSnapshot;
   onOpenImportCurl: () => void;
   onImportPostman?: () => void;
   onOpenFolder: (id: string) => void;
@@ -55,6 +56,7 @@ export function Sidebar({
   onToggleFolderSharing,
   lanSharing,
   sharedSnapshot,
+  onlineSnapshot,
   onOpenImportCurl,
   onImportPostman,
   onOpenFolder,
@@ -366,6 +368,7 @@ export function Sidebar({
       <div className="flex-1 overflow-y-auto py-1.5">
         {folders.filter(folder => !folder.desktopParent || !byId.has(folder.desktopParent)).map(folder => renderFolder(folder, 0))}
         {sharedSnapshot && !search.trim() && <SharedWorkspace snapshot={sharedSnapshot} compact />}
+        {onlineSnapshot && !search.trim() && <SharedWorkspace snapshot={onlineSnapshot} compact source="Online" />}
 
         {filteredRequests.length === 0 && search.trim() && (
           <div className="px-3 py-8 text-center">

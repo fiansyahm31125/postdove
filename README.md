@@ -156,3 +156,33 @@ kembali dengan alamat yang sama. Gunakan **Revoke** di induk untuk mencabut
 semua pairing, atau **Forget host** di viewer untuk melupakan induk di PC itu.
 Apabila firewall Windows meminta izin, LAN Sharing menggunakan profil jaringan
 privat dan port yang ditampilkan.
+
+## Berbagi folder lewat internet
+
+1. Buat repository GitHub **privat** khusus untuk snapshot dan beri penerima akses yang sesuai.
+2. Di PostDove, buka **Online Sharing**, masukkan `owner/repository` dan token GitHub
+   yang berwenang menulis Contents di repository tersebut. Pilih folder, lalu klik
+   **Publish selected folders**. Kirim link undangan yang tampil.
+3. Penerima menempelkan link itu dan token GitHub pribadinya yang punya akses baca
+   Contents di **Online Sharing → Open shared folders**. Hasilnya muncul di
+   **Collections → Online folders · Read-only**.
+
+GitHub Pages menampilkan panduan undangan. Snapshot disimpan oleh GitHub API
+di repository privat dan bisa dibuka saat komputer induk mati. Terbitkan
+snapshot baru setelah mengubah folder dan klik **Open shared folders** untuk
+membaca pembaruan. Snapshot hanya berisi metadata yang sama dengan LAN Sharing.
+Menerbitkan snapshot kosong mengosongkan daftar terbaru. Riwayat commit masih
+tersedia untuk pengguna yang memiliki akses repository.
+
+### Google Sign-In
+
+Buat OAuth client dengan tipe **Desktop app** di Google Cloud, atur consent
+screen, dan tambahkan akun penguji apabila aplikasi masih dalam mode Testing.
+Jalankan PostDove dengan `POSTDOVE_GOOGLE_CLIENT_ID` dan, bila client
+membutuhkannya, `POSTDOVE_GOOGLE_CLIENT_SECRET`. Nilai ini juga bisa diatur
+saat compile untuk distribusi desktop. Gunakan kredensial Desktop app, yang
+merupakan client publik dan mengandalkan PKCE.
+
+Di panel **Online Sharing**, tombol **Sign in with Google** membuka browser sistem.
+PostDove menyimpan profil terverifikasi secara lokal. Akses repository tetap
+diatur GitHub dan token GitHub hanya disimpan di sesi panel.

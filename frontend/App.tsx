@@ -3,10 +3,12 @@ import { CollectionVariablesDialog } from './components/CollectionVariablesDialo
 import { VariableEditor, VariableValue } from './components/VariableEditor';
 import { invoke } from '@tauri-apps/api/core';
 import { LanPanel, type LanStatus, type SharedSnapshot } from './components/LanPanel';
+import { OnlinePanel } from './components/OnlinePanel';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
+  Cloud,
   Columns2,
   FolderTree,
   Globe,
@@ -116,6 +118,8 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
   const [collectionEdit, setCollectionEdit] = useState<string>();
   const [variableEdit, setVariableEdit] = useState<VariableEdit>();
   const [lanOpen, setLanOpen] = useState(false);
+  const [onlineOpen, setOnlineOpen] = useState(false);
+  const [onlineSnapshot, setOnlineSnapshot] = useState<SharedSnapshot>();
   const [lanSharing, setLanSharing] = useState<boolean>();
   const [viewerAddress, setViewerAddress] = useState<string | null>(null);
   const [sharedSnapshot, setSharedSnapshot] = useState<SharedSnapshot>();
@@ -641,7 +645,7 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
   // Global keyboard shortcuts (Cmd+K, Cmd+Enter, Cmd+S, Escape)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (variableEdit || collectionEdit || settingsOpen || results.length) return;
+      if (variableEdit || collectionEdit || settingsOpen || onlineOpen || results.length) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen((v) => !v);
@@ -663,7 +667,7 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeScreen, activeRequest, executeRequest, handleSaveRequest, variableEdit, collectionEdit, settingsOpen, results.length]);
+  }, [activeScreen, activeRequest, executeRequest, handleSaveRequest, variableEdit, collectionEdit, settingsOpen, onlineOpen, results.length]);
 
   // Resizable Sidebar drag handler
   const startSidebarResize = (e: React.MouseEvent) => {
@@ -961,6 +965,7 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
                   onToggleFolderSharing={toggleFolderSharing}
                   lanSharing={Boolean(lanSharing)}
                   sharedSnapshot={viewerAddress ? sharedSnapshot : undefined}
+                  onlineSnapshot={onlineSnapshot}
                   onOpenImportCurl={() => setImportCurlOpen(true)}
                   onImportPostman={importCollection}
                   onExportPostman={exportCollection}
@@ -1000,6 +1005,7 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
                     onToggleFolderSharing={toggleFolderSharing}
                     lanSharing={Boolean(lanSharing)}
                     sharedSnapshot={viewerAddress ? sharedSnapshot : undefined}
+                    onlineSnapshot={onlineSnapshot}
                     onOpenFolder={id => {
                       setMobileDrawerOpen(false);
                       setCollectionEdit(collectionRoot(id));
@@ -1345,6 +1351,7 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
       {lanOpen && <LanPanel onClose={() => setLanOpen(false)} onSharingChange={setLanSharing}
         onViewerAddressChange={setViewerAddress} snapshot={viewerAddress ? sharedSnapshot : undefined}
         onSnapshot={setSharedSnapshot} reportResult={reportResult} />}
+      {onlineOpen && <OnlinePanel folders={folders} onClose={() => setOnlineOpen(false)} onRead={setOnlineSnapshot} />}
       <footer className="h-[26px] px-3 bg-ui-surface border-t border-ui-border flex items-center justify-between text-[11px] text-ui-secondary select-none shrink-0">
         <div className="flex items-center gap-3">
           <button type="button" className="inline-flex shrink-0 items-center gap-1.5 hover:text-ui-ink"
@@ -1356,6 +1363,10 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
             <span aria-live="polite" className={lanSharing ? 'text-ui-string' : 'text-ui-secondary'}>
               {lanSharing === undefined ? '—' : lanSharing ? 'On' : 'Off'}
             </span>
+          </button>
+          <button type="button" aria-label="Online Sharing" onClick={() => setOnlineOpen(true)}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-secondary hover:bg-ui-elevated hover:text-ui-ink focus-visible:outline-ui-accent">
+            <Cloud aria-hidden="true" className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Online Sharing</span>
           </button>
           {activeScreen === 'workbench' && !isCompactViewport && (
             <button
