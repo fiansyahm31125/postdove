@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import { Cloud, X } from 'lucide-react';
-import type { CollectionFolder } from '../types/api';
+import type { ApiRequest, CollectionFolder } from '../types/api';
 import type { SharedSnapshot } from './LanPanel';
 
 const actionStyle = 'cursor-pointer rounded border border-ui-border bg-ui-elevated px-3 py-1.5 hover:bg-ui-hover disabled:cursor-not-allowed disabled:opacity-50';
@@ -34,7 +34,7 @@ export type InvitationSnapshot =
 export function OnlinePanel({
   folders, onClose, onRead, onLogout, invitations, invitationError, onAccept, onDismiss,
   connected, onDriveConnected, invitationSnapshots, onRetryLoad,
-  pairings, pairingError, refreshPairings, beforeShare,
+  pairings, pairingError, refreshPairings, requests,
 }: {
   folders: CollectionFolder[];
   onClose: () => void;
@@ -51,7 +51,7 @@ export function OnlinePanel({
   pairings: OnlinePairing[];
   pairingError: string;
   refreshPairings: () => Promise<void>;
-  beforeShare: () => Promise<void>;
+  requests: ApiRequest[];
 }) {
   const [profile, setProfile] = useState<GoogleProfile | null>(null);
   const [pickerConfigured, setPickerConfigured] = useState(false);
@@ -133,9 +133,12 @@ export function OnlinePanel({
     if (busy || pairingError || !connected || !enabledFolderIds.length || !email.trim()) return;
     void run('Publishing and sending invitation…', async () => {
       try {
-        await beforeShare();
         const notificationError = await invoke<string | null>('drive_share_enabled', {
-          email, folderIds: enabledFolderIds,
+          email,
+          workspace: {
+            folders: folders.filter(folder => folder.lanShared),
+            requests: requests.filter(request => enabledFolderIds.includes(request.folderId)),
+          },
         });
         if (notificationError) {
           setStatus('Viewer access was granted. Send the invitation again to retry the notification.');

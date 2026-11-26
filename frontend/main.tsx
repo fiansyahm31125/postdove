@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import App from './App';
 import { loadDesktopWorkspace, type StudioWorkspace } from './main';
 import '@fontsource/inter/latin-400.css';
@@ -30,6 +30,15 @@ function Desktop() {
       setBusy(false);
     }
   }
+
+  if (!isTauri()) return (
+    <main className="grid h-full place-items-center bg-ui-canvas p-5 text-ui-ink">
+      <section className="w-full max-w-sm rounded-lg border border-ui-border bg-ui-surface p-6">
+        <h1 className="text-xl font-semibold">Open PostDove Desktop</h1>
+        <p className="mt-2 text-ui-secondary">Google sign-in and collection sharing require the PostDove desktop app.</p>
+      </section>
+    </main>
+  );
 
   if (initial) return <App initial={initial} onLogout={() => {
     setInitial(undefined);

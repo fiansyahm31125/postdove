@@ -1479,7 +1479,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
         onSnapshot={setSharedSnapshot} reportResult={reportResult} />}
       {onlineOpen && <OnlinePanel folders={folders}
         pairings={pairings} pairingError={pairingError} refreshPairings={refreshPairings}
-        beforeShare={() => saveQueue.current} onClose={() => setOnlineOpen(false)} onRead={snapshot => {
+        requests={requests} onClose={() => setOnlineOpen(false)} onRead={snapshot => {
         setManualOnlineSnapshot(snapshot);
         if (!snapshot) return;
         setActiveScreen('workbench');

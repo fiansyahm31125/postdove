@@ -254,7 +254,7 @@ pub async fn drive_share_enabled(
     writes: State<'_, DriveWrites>,
     firebase: State<'_, crate::firebase::Firebase>,
     email: String,
-    folder_ids: Vec<String>,
+    workspace: Value,
 ) -> Result<Option<String>, String> {
     let _guard = writes.0.lock().await;
     let email = email.trim().to_lowercase();
@@ -273,7 +273,6 @@ pub async fn drive_share_enabled(
     let path = pairing_file(&directory, &email);
     let _pairing_lock = lock_pairing(&path)?;
     let previous = read_pairing(&path)?;
-    let workspace = crate::load_studio(app)?.ok_or("Save the workspace before sharing.")?;
     let snapshot = crate::lan::public_snapshot(&workspace, |folder| folder["lanShared"] == true);
     let enabled: Vec<String> = snapshot["folders"]
         .as_array()
@@ -281,11 +280,8 @@ pub async fn drive_share_enabled(
         .flatten()
         .filter_map(|folder| folder["id"].as_str().map(str::to_owned))
         .collect();
-    if enabled.is_empty()
-        || enabled.len() != folder_ids.len()
-        || !enabled.iter().all(|id| folder_ids.contains(id))
-    {
-        return Err("The saved sharing list differs from this window. Save the enabled collections and try again.".into());
+    if enabled.is_empty() {
+        return Err("Turn on at least one collection before sharing.".into());
     }
     if previous
         .as_ref()
