@@ -3,7 +3,7 @@ import { CollectionVariablesDialog } from './components/CollectionVariablesDialo
 import { VariableEditor, VariableValue } from './components/VariableEditor';
 import { invoke } from '@tauri-apps/api/core';
 import { LanPanel, type LanStatus, type SharedSnapshot } from './components/LanPanel';
-import { OnlinePanel, type OnlineInvitation } from './components/OnlinePanel';
+import { OnlinePanel, type InvitationSnapshot, type OnlineInvitation, type OnlinePairing } from './components/OnlinePanel';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
@@ -120,10 +120,83 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
   const [variableEdit, setVariableEdit] = useState<VariableEdit>();
   const [lanOpen, setLanOpen] = useState(false);
   const [onlineOpen, setOnlineOpen] = useState(false);
-  const [onlineSnapshot, setOnlineSnapshot] = useState<SharedSnapshot>();
+  const [pairings, setPairings] = useState<OnlinePairing[]>([]);
+  const [pairingError, setPairingError] = useState('');
+  const [pairingsLoaded, setPairingsLoaded] = useState(false);
+  const lockedFolderIds = useMemo(() => new Set(pairings.flatMap(pairing => pairing.folderIds)), [pairings]);
+  const refreshPairings = useCallback(async () => {
+    try {
+      setPairings(await invoke<OnlinePairing[]>('drive_pairings'));
+      setPairingError('');
+      setPairingsLoaded(true);
+    } catch (error) {
+      setPairingError(`Could not load online pairings: ${String(error)}`);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshPairings();
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refreshPairings();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [onlineOpen, refreshPairings]);
+  const [manualOnlineSnapshot, setManualOnlineSnapshot] = useState<SharedSnapshot>();
+  const [driveConnected, setDriveConnected] = useState(false);
+  const [invitationSnapshots, setInvitationSnapshots] = useState<Record<string, InvitationSnapshot>>({});
+  const readySnapshots = useRef<Record<string, InvitationSnapshot>>({});
+  useEffect(() => { readySnapshots.current = driveConnected ? invitationSnapshots : {}; }, [driveConnected, invitationSnapshots]);
   const [invitations, setInvitations] = useState<OnlineInvitation[]>([]);
   const pendingInvitations = invitations.filter(invitation => !invitation.accepted).length;
   const [invitationError, setInvitationError] = useState('');
+  useEffect(() => {
+    let active = true;
+    invoke<boolean>('google_drive_connected').then(connected => {
+      if (active) setDriveConnected(connected);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (!driveConnected) return;
+    const jobs = invitations.filter(invitation => invitation.accepted && !invitationSnapshots[invitation.id]);
+    if (!jobs.length) return;
+    const loading: InvitationSnapshot = { status: 'loading' };
+    setInvitationSnapshots(current => ({
+      ...current, ...Object.fromEntries(jobs.map(invitation => [invitation.id, loading])),
+    }));
+    for (const invitation of jobs) {
+      const finish = (result: InvitationSnapshot) => setInvitationSnapshots(current =>
+        current[invitation.id] === loading ? { ...current, [invitation.id]: result } : current);
+      invoke<SharedSnapshot>('drive_read', { link: invitation.link })
+        .then(snapshot => finish({ status: 'ready', snapshot }))
+        .catch(error => finish({ status: 'failed', error: String(error) }));
+    }
+  }, [driveConnected, invitations, invitationSnapshots]);
+  const onlineSnapshot = useMemo(() => {
+    const folders = [...(manualOnlineSnapshot?.folders ?? [])];
+    const requests = [...(manualOnlineSnapshot?.requests ?? [])];
+    for (const invitation of invitations) {
+      const load = invitationSnapshots[invitation.id];
+      if (!invitation.accepted || load?.status !== 'ready') continue;
+      const key = (id: string) => `${invitation.id}/${id}`;
+      folders.push(...load.snapshot.folders.map(folder => ({
+        ...folder,
+        id: key(folder.id),
+        desktopParent: folder.desktopParent ? key(folder.desktopParent) : null,
+        sharedBy: invitation.sender,
+      })));
+      requests.push(...load.snapshot.requests.map(request => ({
+        ...request, id: key(request.id), folderId: key(request.folderId),
+      })));
+    }
+    return folders.length ? { folders, requests } : undefined;
+  }, [manualOnlineSnapshot, invitations, invitationSnapshots]);
+  function forgetInvitationSnapshot(id: string) {
+    setInvitationSnapshots(current => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
   useEffect(() => {
     let active = true;
     let timer: number;
@@ -134,6 +207,22 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
           if (active) {
             setInvitations(current);
             setInvitationError('');
+            const ids = new Set(current.map(invitation => invitation.id));
+            setInvitationSnapshots(previous => {
+              const entries = Object.entries(previous);
+              return entries.some(([id]) => !ids.has(id))
+                ? Object.fromEntries(entries.filter(([id]) => ids.has(id)))
+                : previous;
+            });
+            for (const invitation of current) {
+              const previous = readySnapshots.current[invitation.id];
+              if (!invitation.accepted || previous?.status !== 'ready') continue;
+              void invoke<SharedSnapshot>('drive_read', { link: invitation.link }).then(snapshot => {
+                if (active) setInvitationSnapshots(loads => loads[invitation.id] === previous
+                  ? { ...loads, [invitation.id]: { status: 'ready', snapshot } }
+                  : loads);
+              }).catch(() => {});
+            }
           }
         }
       } catch (error) {
@@ -511,6 +600,10 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
   function handleDeleteFolder(folderId: string) {
     const folder = folderById.get(folderId);
     if (folders.length <= 1 || !folder) return;
+    if (lockedFolderIds.has(folderId) || (folder.lanShared && (!pairingsLoaded || pairingError))) {
+      reportResult({ action: 'Delete folder', ok: false, detail: 'Disconnect its online pairings before deleting this folder.' });
+      return;
+    }
     if (folder.desktopParent && folders.some(item => item.desktopParent === folderId)) {
       reportResult({ action: 'Delete folder', ok: false, detail: 'Remove its subfolders before deleting this folder.' });
       return;
@@ -530,7 +623,8 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
   }
 
   function toggleFolderSharing(folder: CollectionFolder) {
-    markChange(folder.lanShared ? 'Stop sharing folder' : 'Share folder over LAN');
+    if (lockedFolderIds.has(folder.id) || (folder.lanShared && (!pairingsLoaded || pairingError))) return;
+    markChange(folder.lanShared ? 'Stop sharing folder' : 'Enable folder sharing');
     setFolders(current => current.map(item => item.id === folder.id
       ? { ...item, lanShared: !item.lanShared }
       : item));
@@ -991,6 +1085,8 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
                   onCreateFolder={handleCreateFolder}
                   onDeleteFolder={handleDeleteFolder}
                   onToggleFolderSharing={toggleFolderSharing}
+                  lockedFolderIds={lockedFolderIds}
+                  sharingStatusUnavailable={!pairingsLoaded || !!pairingError}
                   lanSharing={Boolean(lanSharing)}
                   sharedSnapshot={viewerAddress ? sharedSnapshot : undefined}
                   onlineSnapshot={onlineSnapshot}
@@ -1031,6 +1127,8 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
                     onCreateFolder={handleCreateFolder}
                     onDeleteFolder={handleDeleteFolder}
                     onToggleFolderSharing={toggleFolderSharing}
+                  lockedFolderIds={lockedFolderIds}
+                  sharingStatusUnavailable={!pairingsLoaded || !!pairingError}
                     lanSharing={Boolean(lanSharing)}
                     sharedSnapshot={viewerAddress ? sharedSnapshot : undefined}
                     onlineSnapshot={onlineSnapshot}
@@ -1379,17 +1477,34 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
       {lanOpen && <LanPanel onClose={() => setLanOpen(false)} onSharingChange={setLanSharing}
         onViewerAddressChange={setViewerAddress} snapshot={viewerAddress ? sharedSnapshot : undefined}
         onSnapshot={setSharedSnapshot} reportResult={reportResult} />}
-      {onlineOpen && <OnlinePanel folders={folders} onClose={() => setOnlineOpen(false)} onRead={snapshot => {
-        setOnlineSnapshot(snapshot);
+      {onlineOpen && <OnlinePanel folders={folders}
+        pairings={pairings} pairingError={pairingError} refreshPairings={refreshPairings}
+        beforeShare={() => saveQueue.current} onClose={() => setOnlineOpen(false)} onRead={snapshot => {
+        setManualOnlineSnapshot(snapshot);
         if (!snapshot) return;
         setActiveScreen('workbench');
         if (isCompactViewport) setMobileDrawerOpen(true);
         else setSidebarOpen(true);
       }}
         onLogout={onLogout} invitations={invitations} invitationError={invitationError}
-        onAccept={id => setInvitations(current => current.map(invitation =>
-          invitation.id === id ? { ...invitation, accepted: true } : invitation))}
-        onDismiss={id => setInvitations(current => current.filter(invitation => invitation.id !== id))} />}
+        connected={driveConnected} invitationSnapshots={invitationSnapshots}
+        onDriveConnected={connected => {
+          setDriveConnected(connected);
+          if (connected) setInvitationSnapshots(current => Object.fromEntries(
+            Object.entries(current).filter(([, load]) => load.status !== 'failed')));
+        }}
+        onRetryLoad={forgetInvitationSnapshot}
+        onAccept={id => {
+          setInvitations(current => current.map(invitation =>
+            invitation.id === id ? { ...invitation, accepted: true } : invitation));
+          setActiveScreen('workbench');
+          if (isCompactViewport) setMobileDrawerOpen(true);
+          else setSidebarOpen(true);
+        }}
+        onDismiss={id => {
+          setInvitations(current => current.filter(invitation => invitation.id !== id));
+          forgetInvitationSnapshot(id);
+        }} />}
       <footer className="h-[26px] px-3 bg-ui-surface border-t border-ui-border flex items-center justify-between text-[11px] text-ui-secondary select-none shrink-0">
         <div className="flex items-center gap-3">
           <button type="button" className="inline-flex shrink-0 items-center gap-1.5 hover:text-ui-ink"

@@ -12,7 +12,12 @@ service cloud.firestore {
         return googleUser() && resource.data.recipient == request.auth.token.email.lower();
       }
 
-      allow get, delete: if addressedToMe();
+      allow get: if addressedToMe();
+      allow delete: if googleUser() && (
+        !exists(/databases/$(database)/documents/invitations/$(id))
+        || addressedToMe()
+        || resource.data.senderUid == request.auth.uid
+      );
       allow list: if addressedToMe() && request.query.limit <= 50;
       allow update: if addressedToMe()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accepted'])

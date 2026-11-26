@@ -163,33 +163,29 @@ semua pairing, atau **Forget host** di viewer untuk melupakan induk di PC itu.
 Apabila firewall Windows meminta izin, LAN Sharing menggunakan profil jaringan
 privat dan port yang ditampilkan.
 
-## Berbagi folder lewat Google Drive
+## Berbagi koleksi lewat Google Drive
 
-1. Buka **Online Sharing** dan hubungkan akun Google. Berikan izin akses file
-   yang dibuat atau dibuka lewat PostDove.
-2. Pilih **Share a folder**, isi folder dan alamat Google penerima, lalu klik
-   **Send invitation**. PostDove menyimpan satu JSON per folder di
-   `My Drive/PostDove`, memberi izin Viewer, lalu mengirim notifikasi.
-3. Untuk memperbarui snapshot tanpa mengirim undangan, pilih
-   **Drive options → Update snapshot**. PostDove memperbarui file yang sama.
-4. Penerima login dengan akun yang diundang dan membuka **Online Sharing →
-   Invitations**. Klik **Accept**, lalu **Open folder**. Hasilnya tampil di
-   **Collections → Online folders · Read-only**. **Decline** membuang
-   notifikasi. Izin file tetap dikelola oleh pemilik di Google Drive.
-   Jika izin file Google Drive mengizinkan unduhan lewat browser tetapi PostDove
-   belum diizinkan membuka file tersebut lewat API, buka **Open another way**.
-   Gunakan **Google Picker** jika tersedia, atau pilih **Open in Drive**,
-   unduh JSON, lalu pilih **Import JSON**.
+1. Aktifkan ikon berbagi di sidebar untuk setiap koleksi atau subfolder yang
+   ingin dibagikan.
+2. Buka **Online Sharing**, hubungkan Google Drive, lalu pilih **Share collections**.
+   Masukkan email Google penerima dan klik **Send invitation**. PostDove menyimpan
+   seluruh daftar yang aktif sebagai satu snapshot JSON per penerima di
+   `My Drive/PostDove`, memberi izin Viewer, lalu mengirim undangan di PostDove.
+3. Penerima membuka **Online Sharing > Invitations** dan memilih **Accept**.
+   Koleksi muncul di sidebar dengan tanda **Online** dan akses baca saja.
+4. Gunakan **Online pairings > Update collections** untuk memperbarui daftar
+   yang dibagikan kepada penerima. Koleksi yang sudah dibagikan tetap terkunci
+   selama ada pairing yang menyertakannya. Pilih **Disconnect**, lalu konfirmasi,
+   untuk mencabut akses dan menarik undangan. Setelah semua pairing terkait
+   terputus, koleksi bisa dimatikan dari sidebar.
 
-Setelah Google Drive memberi izin Viewer, PostDove juga mengirim notifikasi
-ke **Online Sharing → Invitations**. Undangan tersedia saat penerima login
-dan panel akan menyegarkan daftar selama aplikasi aktif. Firebase menyimpan
-pengirim, penerima, dan link Drive. Semua isi snapshot tetap di Google Drive.
+Firebase menyimpan identitas pengirim, penerima, dan link undangan. Snapshot
+berisi metadata yang sama dengan LAN Sharing dan disimpan di Google Drive.
+Penerima dapat membukanya saat komputer pengirim mati. Salinan yang sudah
+diunduh tetap ada pada penerima.
 
-Snapshot hanya berisi metadata yang sama dengan LAN Sharing. Izin Viewer
-berlaku per file. Gunakan **Manage access in Drive** untuk mencabut izin.
-Publikasikan ulang untuk memperbarui snapshot. Penerima bisa membuka file saat
-komputer induk mati. Salinan yang sudah diunduh tetap ada pada penerima.
+**Open another way** mendukung link Drive, Google Picker jika tersedia, dan
+impor JSON. Akses dari undangan versi lama dikelola dari Google Drive.
 
 ### Konfigurasi Google Sign-In
 

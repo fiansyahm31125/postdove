@@ -1,8 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Cloud, X } from 'lucide-react';
 import type { CollectionFolder } from '../types/api';
-import { folderAncestors } from '../utils/folderTree';
 import type { SharedSnapshot } from './LanPanel';
 
 const actionStyle = 'cursor-pointer rounded border border-ui-border bg-ui-elevated px-3 py-1.5 hover:bg-ui-hover disabled:cursor-not-allowed disabled:opacity-50';
@@ -15,6 +14,11 @@ interface GoogleProfile {
   email: string;
 }
 
+export interface OnlinePairing {
+  email: string;
+  folderIds: string[];
+}
+
 export interface OnlineInvitation {
   id: string;
   sender: string;
@@ -22,7 +26,16 @@ export interface OnlineInvitation {
   accepted: boolean;
 }
 
-export function OnlinePanel({ folders, onClose, onRead, onLogout, invitations, invitationError, onAccept, onDismiss }: {
+export type InvitationSnapshot =
+  | { status: 'loading' }
+  | { status: 'ready'; snapshot: SharedSnapshot }
+  | { status: 'failed'; error: string };
+
+export function OnlinePanel({
+  folders, onClose, onRead, onLogout, invitations, invitationError, onAccept, onDismiss,
+  connected, onDriveConnected, invitationSnapshots, onRetryLoad,
+  pairings, pairingError, refreshPairings, beforeShare,
+}: {
   folders: CollectionFolder[];
   onClose: () => void;
   onRead: (snapshot: SharedSnapshot | undefined) => void;
@@ -31,13 +44,18 @@ export function OnlinePanel({ folders, onClose, onRead, onLogout, invitations, i
   invitationError: string;
   onAccept: (id: string) => void;
   onDismiss: (id: string) => void;
+  connected: boolean;
+  onDriveConnected: (connected: boolean) => void;
+  invitationSnapshots: Record<string, InvitationSnapshot>;
+  onRetryLoad: (id: string) => void;
+  pairings: OnlinePairing[];
+  pairingError: string;
+  refreshPairings: () => Promise<void>;
+  beforeShare: () => Promise<void>;
 }) {
   const [profile, setProfile] = useState<GoogleProfile | null>(null);
-  const [connected, setConnected] = useState(false);
   const [pickerConfigured, setPickerConfigured] = useState(false);
-  const [folderId, setFolderId] = useState('');
   const [recipient, setRecipient] = useState('');
-  const [sharedLink, setSharedLink] = useState('');
   const [openLink, setOpenLink] = useState('');
   const [view, setView] = useState<'invitations' | 'share'>('invitations');
   const [busy, setBusy] = useState('');
@@ -45,20 +63,19 @@ export function OnlinePanel({ folders, onClose, onRead, onLogout, invitations, i
   const [status, setStatus] = useState('');
   const dialog = useRef<HTMLDialogElement>(null);
   const options = useRef<HTMLDetailsElement>(null);
-  const byId = useMemo(() => new Map(folders.map(folder => [folder.id, folder])), [folders]);
+  const [disconnect, setDisconnect] = useState<string>();
+  const enabledFolderIds = folders.filter(folder => folder.lanShared).map(folder => folder.id);
 
   useEffect(() => {
     dialog.current?.showModal();
     let active = true;
     Promise.all([
       invoke<GoogleProfile | null>('google_profile'),
-      invoke<boolean>('google_drive_connected'),
       invoke<boolean>('drive_picker_configured'),
     ])
-      .then(([next, drive, picker]) => {
+      .then(([next, picker]) => {
         if (!active) return;
         setProfile(next);
-        setConnected(drive);
         setPickerConfigured(picker);
       })
       .catch(error => { if (active) setError(String(error)); });
@@ -75,7 +92,7 @@ export function OnlinePanel({ folders, onClose, onRead, onLogout, invitations, i
       setError(String(error));
       if (connected) {
         const stillConnected = await invoke<boolean>('google_drive_connected').catch(() => undefined);
-        if (stillConnected === false) setConnected(false);
+        if (stillConnected === false) onDriveConnected(false);
       }
     } finally {
       setBusy('');
@@ -85,8 +102,7 @@ export function OnlinePanel({ folders, onClose, onRead, onLogout, invitations, i
   function connect() {
     void run('Waiting for Google in your browser…', async () => {
       setProfile(await invoke<GoogleProfile>('google_login', { drive: true }));
-      setConnected(true);
-      setSharedLink('');
+      onDriveConnected(true);
       onRead(undefined);
       setStatus('Google Drive connected.');
     });
@@ -113,10 +129,25 @@ export function OnlinePanel({ folders, onClose, onRead, onLogout, invitations, i
     });
   }
 
-  async function publish() {
-    const link = await invoke<string>('drive_publish', { folderId });
-    setSharedLink(link);
-    return link;
+  function share(email: string) {
+    if (busy || pairingError || !connected || !enabledFolderIds.length || !email.trim()) return;
+    void run('Publishing and sending invitation…', async () => {
+      try {
+        await beforeShare();
+        const notificationError = await invoke<string | null>('drive_share_enabled', {
+          email, folderIds: enabledFolderIds,
+        });
+        if (notificationError) {
+          setStatus('Viewer access was granted. Send the invitation again to retry the notification.');
+          setError(notificationError);
+        } else {
+          setRecipient('');
+          setStatus('Enabled collections shared. Invitation available in PostDove.');
+        }
+      } finally {
+        await refreshPairings();
+      }
+    });
   }
 
   const pending = invitations.filter(invitation => !invitation.accepted).length;
@@ -152,10 +183,11 @@ export function OnlinePanel({ folders, onClose, onRead, onLogout, invitations, i
             className="cursor-pointer border-b-2 border-transparent px-3 py-2 text-ui-secondary hover:text-ui-ink aria-pressed:border-ui-accent aria-pressed:font-semibold aria-pressed:text-ui-ink"
             onClick={() => {
               setView(next);
+              setDisconnect(undefined);
               setStatus('');
               setError('');
             }}>
-            {next === 'invitations' ? `Invitations${pending ? ` (${pending})` : ''}` : 'Share a folder'}
+            {next === 'invitations' ? `Invitations${pending ? ` (${pending})` : ''}` : 'Share collections'}
           </button>
         ))}
       </nav>
@@ -163,27 +195,40 @@ export function OnlinePanel({ folders, onClose, onRead, onLogout, invitations, i
       {view === 'invitations' ? <section aria-label="Invitations" className="space-y-3 pt-3">
         {invitationError && <p className="text-ui-error-text" role="status">{invitationError}</p>}
         {!invitationError && !invitations.length && <p className="py-2 text-ui-secondary">No invitations yet.</p>}
-        {invitations.map(invitation => (
-          <div key={invitation.id} className="flex flex-wrap items-center gap-2 border-b border-ui-border pb-2">
-            <div className="min-w-[9rem] flex-1">
-              <span className="block break-all">{invitation.sender}</span>
-              <span className="text-[11px] text-ui-secondary">{invitation.accepted ? 'Accepted' : 'Pending'}</span>
+        {invitations.map(invitation => {
+          const load = invitationSnapshots[invitation.id];
+          return (
+            <div key={invitation.id} className="flex flex-wrap items-center gap-2 border-b border-ui-border pb-2">
+              <div className="min-w-[9rem] flex-1">
+                <span className="block break-all">{invitation.sender}</span>
+                <span className="text-[11px] text-ui-secondary">{invitation.accepted ? 'Accepted' : 'Pending'}</span>
+              </div>
+              {!invitation.accepted && <button type="button" className={primaryStyle} disabled={!!busy}
+                onClick={() => void run('Accepting invitation…', async () => {
+                  await invoke('firebase_accept', { id: invitation.id });
+                  onAccept(invitation.id);
+                  setStatus(connected ? 'Invitation accepted.' : 'Invitation accepted. Connect Google Drive to load it.');
+                })}>Accept</button>}
+              <button type="button" className="cursor-pointer rounded px-2 py-1.5 text-ui-secondary hover:text-ui-ink disabled:opacity-50" disabled={!!busy}
+                onClick={() => void run(invitation.accepted ? 'Removing invitation…' : 'Declining invitation…', async () => {
+                  await invoke('firebase_dismiss', { id: invitation.id });
+                  onDismiss(invitation.id);
+                })}>{invitation.accepted ? 'Remove' : 'Decline'}</button>
+              {invitation.accepted && load?.status === 'loading' && <p role="status" className="w-full text-[11px] text-ui-secondary">Loading collection…</p>}
+              {invitation.accepted && load?.status === 'ready' && <p className="w-full text-[11px] text-ui-secondary">Available in Collections.</p>}
+              {invitation.accepted && load?.status === 'failed' && <div className="w-full space-y-1 text-[11px]">
+                <p className="text-ui-error-text">{load.error}</p>
+                <div className="flex flex-wrap gap-2">
+                  {connected && <button type="button" className={actionStyle} onClick={() => onRetryLoad(invitation.id)}>Retry loading</button>}
+                  <button type="button" className={actionStyle} onClick={() => {
+                    setOpenLink(invitation.link);
+                    if (options.current) options.current.open = true;
+                  }}>Other ways to open</button>
+                </div>
+              </div>}
             </div>
-            {invitation.accepted
-              ? <button type="button" className={actionStyle} disabled={!!busy} onClick={() => openFolder(invitation.link)}>Open folder</button>
-              : <button type="button" className={primaryStyle} disabled={!!busy}
-                  onClick={() => void run('Accepting invitation…', async () => {
-                    await invoke('firebase_accept', { id: invitation.id });
-                    onAccept(invitation.id);
-                    setStatus('Invitation accepted.');
-                  })}>Accept</button>}
-            <button type="button" className="cursor-pointer rounded px-2 py-1.5 text-ui-secondary hover:text-ui-ink disabled:opacity-50" disabled={!!busy}
-              onClick={() => void run(invitation.accepted ? 'Removing invitation…' : 'Declining invitation…', async () => {
-                await invoke('firebase_dismiss', { id: invitation.id });
-                onDismiss(invitation.id);
-              })}>{invitation.accepted ? 'Remove' : 'Decline'}</button>
-          </div>
-        ))}
+          );
+        })}
         <details ref={options} className="text-ui-secondary">
           <summary className="cursor-pointer py-1 text-[12px]">Open another way</summary>
           <div className="mt-2 space-y-2">
@@ -208,55 +253,59 @@ export function OnlinePanel({ folders, onClose, onRead, onLogout, invitations, i
             </div>
           </div>
         </details>
-      </section> : <section aria-label="Share a folder" className="space-y-3 pt-3">
+      </section> : <section aria-label="Share collections" className="space-y-3 pt-3">
         <form className="grid gap-3" onSubmit={event => {
           event.preventDefault();
-          if (busy || !connected || !folderId || !recipient.trim()) return;
-          void run('Publishing and sending invitation…', async () => {
-            const link = await publish();
-            const notificationError = await invoke<string | null>('drive_grant', { link, email: recipient });
-            if (notificationError) {
-              setStatus('Viewer access granted in Drive. Try sending the invitation again.');
-              setError(notificationError);
-              return;
-            }
-            setRecipient('');
-            setStatus('Invitation sent.');
-          });
+          share(recipient);
         }}>
-          <label className="grid gap-1">Folder
-            <select className={inputStyle} value={folderId} disabled={!!busy} required onChange={event => {
-              setFolderId(event.target.value);
-              setSharedLink('');
-            }}>
-              <option value="">Choose a folder</option>
-              {folders.map(folder => (
-                <option key={folder.id} value={folder.id}>
-                  {[...folderAncestors(folder.id, byId), folder].map(item => item.name).join(' / ')}
-                </option>
-              ))}
-            </select>
-          </label>
+          <p className="text-ui-secondary">
+            {enabledFolderIds.length
+              ? `${enabledFolderIds.length} enabled ${enabledFolderIds.length === 1 ? 'collection or folder' : 'collections or folders'} will be shared.`
+              : 'Turn on sharing next to a collection or folder in the sidebar.'}
+          </p>
           <label className="grid gap-1">Recipient’s Google email
             <input type="email" required className={inputStyle} value={recipient} disabled={!!busy}
               onChange={event => setRecipient(event.target.value)} />
           </label>
-          <button className={primaryStyle + ' justify-self-start'} disabled={!!busy || !connected || !folderId || !recipient.trim()}>
+          <button className={primaryStyle + ' justify-self-start'}
+            disabled={!!busy || !!pairingError || !connected || !enabledFolderIds.length || !recipient.trim()}>
             Send invitation
           </button>
         </form>
-        <details className="text-ui-secondary">
-          <summary className="cursor-pointer py-1 text-[12px]">Drive options</summary>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <button type="button" className={actionStyle} disabled={!!busy || !connected || !folderId}
-              onClick={() => void run('Updating the Drive snapshot…', async () => {
-                await publish();
-                setStatus('Snapshot saved in My Drive / PostDove.');
-              })}>Update snapshot</button>
-            {sharedLink && <button type="button" className={actionStyle} disabled={!!busy}
-              onClick={() => void run('Opening Google Drive…', () => invoke('drive_open_in_browser', { link: sharedLink }))}>Manage access in Drive</button>}
-          </div>
-        </details>
+        {pairingError && <p className="text-ui-error-text" role="alert">{pairingError}</p>}
+        {pairings.length > 0 && <div className="space-y-2 border-t border-ui-border pt-3">
+          <h3 className="font-semibold">Online pairings</h3>
+          {pairings.map(pairing => (
+            <div key={pairing.email} className="space-y-2 rounded border border-ui-border p-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="min-w-0 break-all">{pairing.email}</span>
+                {disconnect !== pairing.email && <div className="flex flex-wrap gap-2">
+                  <button type="button" className={actionStyle}
+                    disabled={!!busy || !!pairingError || !connected || !enabledFolderIds.length}
+                    onClick={() => share(pairing.email)}>Update collections</button>
+                  <button type="button" className={actionStyle} disabled={!!busy || !connected}
+                    onClick={() => setDisconnect(pairing.email)}>Disconnect</button>
+                </div>}
+              </div>
+              {disconnect === pairing.email && <div role="group" aria-label="Confirm disconnect" className="space-y-2">
+                <p className="text-ui-secondary">Remove this recipient’s access to the shared collections?</p>
+                <div className="flex gap-2">
+                  <button type="button" className={actionStyle} disabled={!!busy} onClick={() => setDisconnect(undefined)}>Cancel</button>
+                  <button type="button" className={primaryStyle} disabled={!!busy || !connected}
+                    onClick={() => void run('Disconnecting online pairing…', async () => {
+                      try {
+                        await invoke('drive_disconnect_pairing', { email: pairing.email });
+                        setDisconnect(undefined);
+                        setStatus('Online pairing disconnected.');
+                      } finally {
+                        await refreshPairings();
+                      }
+                    })}>Confirm disconnect</button>
+                </div>
+              </div>}
+            </div>
+          ))}
+        </div>}
       </section>}
 
       {(busy || status) && <p className="mt-3 text-ui-secondary" role="status">{busy || status}</p>}

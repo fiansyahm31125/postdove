@@ -128,6 +128,12 @@ impl Firebase {
         Ok(())
     }
 
+    pub(crate) async fn account(&self) -> Result<(String, String), String> {
+        let active = self.session.lock().await;
+        let session = active.as_ref().ok_or("Sign in to PostDove first.")?;
+        Ok((session.uid.clone(), session.email.clone()))
+    }
+
     async fn credentials(&self) -> Result<(String, String, String), String> {
         let mut active = self.session.lock().await;
         let session = active.as_mut().ok_or("Sign in to PostDove first.")?;
@@ -178,11 +184,30 @@ pub struct Invitation {
     accepted: bool,
 }
 
+fn invitation_id(uid: &str, recipient: &str, file: &str) -> String {
+    format!("{:x}", Sha256::digest(format!("{uid}:{recipient}:{file}")))
+}
+
+pub(crate) async fn withdraw(firebase: &Firebase, recipient: &str, file: &str) -> Result<(), String> {
+    let (uid, _, token) = firebase.credentials().await?;
+    let response = client()?
+        .delete(invitation_path(&invitation_id(&uid, recipient, file))?)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| "Could not withdraw the PostDove invitation.")?;
+    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+        Ok(())
+    } else {
+        Err("Drive access was removed, but the PostDove invitation could not be withdrawn.".into())
+    }
+}
+
 pub(crate) async fn notify(firebase: &Firebase, recipient: &str, file: &str) -> Result<(), String> {
     let (uid, email, token) = firebase.credentials().await?;
     let recipient = recipient.trim().to_lowercase();
     let link = format!("https://drive.google.com/file/d/{file}/view");
-    let id = format!("{:x}", Sha256::digest(format!("{uid}:{recipient}:{file}")));
+    let id = invitation_id(&uid, &recipient, file);
     let response = client()?
         .post(format!("{}/invitations", endpoint()?))
         .query(&[("documentId", id)])

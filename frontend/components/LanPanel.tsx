@@ -17,7 +17,7 @@ interface Offer {
   expiresInSeconds: number;
 }
 export interface SharedSnapshot {
-  folders: { id: string; name: string; desktopParent?: string | null }[];
+  folders: { id: string; name: string; desktopParent?: string | null; sharedBy?: string }[];
   requests: {
     id: string; folderId: string; name: string; method: string; url: string;
     headers: string[]; parameters: string[];
@@ -28,7 +28,8 @@ function renderSharedFolder(snapshot: SharedSnapshot, folder: SharedSnapshot['fo
   return <details key={folder.id} open={!compact} className="mt-1 rounded border border-ui-border p-2">
     <summary className="cursor-pointer break-words font-medium">
       {folder.name}
-      <span className="ml-1.5 inline-flex items-center gap-1 align-middle text-[10px] text-ui-green" title={`Shared via ${source} · Read-only`}>
+      <span className="ml-1.5 inline-flex items-center gap-1 align-middle text-[10px] text-ui-green"
+        title={folder.sharedBy ? `Shared by ${folder.sharedBy} · Read-only` : `Shared via ${source} · Read-only`}>
         <Network className="h-3 w-3" aria-hidden="true" /> {source}
       </span>
     </summary>

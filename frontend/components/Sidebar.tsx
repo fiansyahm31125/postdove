@@ -31,6 +31,8 @@ interface SidebarProps {
   onDeleteFolder: (id: string) => void;
   onToggleFolderSharing: (folder: CollectionFolder) => void;
   lanSharing: boolean;
+  lockedFolderIds: ReadonlySet<string>;
+  sharingStatusUnavailable: boolean;
   sharedSnapshot?: SharedSnapshot;
   onlineSnapshot?: SharedSnapshot;
   onOpenImportCurl: () => void;
@@ -55,6 +57,8 @@ export function Sidebar({
   onDeleteFolder,
   onToggleFolderSharing,
   lanSharing,
+  lockedFolderIds,
+  sharingStatusUnavailable,
   sharedSnapshot,
   onlineSnapshot,
   onOpenImportCurl,
@@ -140,12 +144,13 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            aria-label={`Share ${folder.name} over LAN`}
-            aria-pressed={Boolean(folder.lanShared)}
+            aria-label={`Sharing for ${folder.name}`}
+            aria-pressed={Boolean(folder.lanShared) || lockedFolderIds.has(folder.id)}
+            disabled={lockedFolderIds.has(folder.id) || (Boolean(folder.lanShared) && sharingStatusUnavailable)}
             title={folder.lanShared ? (lanSharing ? 'Online on LAN · Click to stop sharing' : 'Sharing enabled · Start LAN Sharing to go online') : 'Share this folder over LAN'}
             onClick={() => onToggleFolderSharing(folder)}
-            className={`shrink-0 cursor-pointer rounded p-0.5 hover:bg-ui-border focus-visible:outline-ui-accent ${
-              folder.lanShared && lanSharing ? 'text-ui-green' : folder.lanShared ? 'text-ui-accent' : 'text-ui-muted hover:text-ui-ink'
+            className={`shrink-0 cursor-pointer rounded p-0.5 hover:bg-ui-border focus-visible:outline-ui-accent disabled:cursor-not-allowed ${
+              (lockedFolderIds.has(folder.id) || (folder.lanShared && lanSharing)) ? 'text-ui-green' : folder.lanShared ? 'text-ui-accent' : 'text-ui-muted hover:text-ui-ink'
             }`}
           >
             <Network className="h-3.5 w-3.5" aria-hidden="true" />

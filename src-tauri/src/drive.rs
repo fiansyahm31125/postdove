@@ -3,11 +3,15 @@ use crate::online::{
     random_token, read_body, read_json,
 };
 use reqwest::{Client, Method, StatusCode, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{net::Ipv4Addr, time::Duration};
-use tauri::{AppHandle, State};
+use std::{
+    net::Ipv4Addr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tauri::{AppHandle, Manager, State};
 use tokio::{io::AsyncWriteExt, net::TcpListener, sync::Mutex, time::timeout};
 
 const FILES: &str = "https://www.googleapis.com/drive/v3/files";
@@ -117,51 +121,27 @@ async fn root_folder(http: &Client, token: &str) -> Result<String, String> {
     Ok(read_json::<File>(response, 32_000).await?.id)
 }
 
-#[tauri::command]
-pub async fn drive_publish(
-    app: AppHandle,
-    login: State<'_, GoogleLogin>,
-    writes: State<'_, DriveWrites>,
-    folder_id: String,
+async fn publish_pairing(
+    http: &Client,
+    token: &str,
+    mut snapshot: Value,
+    key: &str,
+    previous: Option<&str>,
 ) -> Result<String, String> {
-    let _guard = writes.0.lock().await;
-    let token = login.drive_token().await?;
-    let workspace = crate::load_studio(app)?.ok_or("Save the workspace before publishing.")?;
-    let mut snapshot = crate::lan::public_snapshot(&workspace, |folder| {
-        folder["id"].as_str() == Some(folder_id.as_str())
-    });
-    let name = snapshot["folders"][0]["name"]
-        .as_str()
-        .ok_or("This folder no longer exists.")?;
-    let name = format!(
-        "{}.json",
-        name.chars()
-            .map(|c| if c == '/' || c == '\\' || c.is_control() {
-                ' '
-            } else {
-                c
-            })
-            .take(120)
-            .collect::<String>()
-    );
     snapshot["format"] = json!("postdove-drive-v1");
     let content = serde_json::to_vec(&snapshot).map_err(|_| "Could not encode the snapshot.")?;
     if content.len() > MAX_BYTES {
         return Err("This folder snapshot exceeds the size limit.".into());
     }
-    let http = client()?;
-    let root = file_id(&root_folder(&http, &token).await?)?;
-    let key = format!("{:x}", Sha256::digest(folder_id.as_bytes()));
-    let query = format!(
-        "trashed = false and '{root}' in parents and 'me' in owners and appProperties has {{ key='postdoveFolder' and value='{key}' }}"
-    );
-    let previous = find_file(&http, &token, &query).await?;
-    let mut metadata =
-        json!({"name":name, "mimeType":"application/json", "appProperties":{"postdoveFolder":key}});
+    let mut metadata = json!({
+        "name": "Shared collections.json",
+        "mimeType": "application/json",
+        "appProperties": {"postdovePairing":key}
+    });
     let (method, endpoint) = match previous {
-        Some(file) => (Method::PATCH, format!("{UPLOAD}/{}", file_id(&file.id)?)),
+        Some(id) => (Method::PATCH, format!("{UPLOAD}/{}", file_id(id)?)),
         None => {
-            metadata["parents"] = json!([root]);
+            metadata["parents"] = json!([root_folder(http, token).await?]);
             (Method::POST, UPLOAD.to_owned())
         }
     };
@@ -183,23 +163,104 @@ pub async fn drive_publish(
         .send()
         .await
         .map_err(|_| "Could not publish the folder to Google Drive.")?;
-    let id = file_id(&read_json::<File>(response, 32_000).await?.id)?;
-    Ok(format!("https://drive.google.com/file/d/{id}/view"))
+    file_id(&read_json::<File>(response, 32_000).await?.id)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlinePairing {
+    email: String,
+    folder_ids: Vec<String>,
+    file_id: String,
+}
+
+async fn pairing_directory(
+    app: &AppHandle,
+    firebase: &crate::firebase::Firebase,
+) -> Result<(PathBuf, String), String> {
+    let (uid, email) = firebase.account().await?;
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("online-pairings")
+        .join(format!("{:x}", Sha256::digest(uid)));
+    Ok((directory, email))
+}
+
+fn pairing_file(directory: &Path, email: &str) -> PathBuf {
+    directory.join(format!("{:x}.json", Sha256::digest(email)))
+}
+
+fn lock_pairing(path: &Path) -> Result<std::fs::File, String> {
+    let directory = path
+        .parent()
+        .ok_or("Online pairing directory is missing.")?;
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("lock"))
+        .map_err(|error| error.to_string())?;
+    lock.try_lock()
+        .map_err(|_| "This online pairing is being changed in another PostDove window.")?;
+    Ok(lock)
+}
+
+fn read_pairing(path: &Path) -> Result<Option<OnlinePairing>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| error.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 #[tauri::command]
-pub async fn drive_grant(
+pub async fn drive_pairings(
+    app: AppHandle,
+    writes: State<'_, DriveWrites>,
+    firebase: State<'_, crate::firebase::Firebase>,
+) -> Result<Vec<OnlinePairing>, String> {
+    let _guard = writes.0.lock().await;
+    let (directory, _) = pairing_directory(&app, &firebase).await?;
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut pairings = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            if let Some(pairing) = read_pairing(&path)? {
+                pairings.push(pairing);
+            }
+        }
+    }
+    pairings.sort_by(|a, b| a.email.cmp(&b.email));
+    Ok(pairings)
+}
+
+#[tauri::command]
+pub async fn drive_share_enabled(
+    app: AppHandle,
     login: State<'_, GoogleLogin>,
     writes: State<'_, DriveWrites>,
     firebase: State<'_, crate::firebase::Firebase>,
-    link: String,
     email: String,
+    folder_ids: Vec<String>,
 ) -> Result<Option<String>, String> {
     let _guard = writes.0.lock().await;
-    let token = login.drive_token().await?;
-    let id = file_id(&link)?;
-    let email = email.trim();
-    if email.len() > 254
+    let email = email.trim().to_lowercase();
+    let (directory, sender) = pairing_directory(&app, &firebase).await?;
+    if email == sender
+        || email.len() > 254
         || !email.split_once('@').is_some_and(|(name, domain)| {
             !name.is_empty()
                 && domain.contains('.')
@@ -207,31 +268,177 @@ pub async fn drive_grant(
                 && !email.chars().any(char::is_whitespace)
         })
     {
-        return Err("Enter the recipient's Google email address.".into());
+        return Err("Enter another Google account’s email address.".into());
     }
+    let path = pairing_file(&directory, &email);
+    let _pairing_lock = lock_pairing(&path)?;
+    let previous = read_pairing(&path)?;
+    let workspace = crate::load_studio(app)?.ok_or("Save the workspace before sharing.")?;
+    let snapshot = crate::lan::public_snapshot(&workspace, |folder| folder["lanShared"] == true);
+    let enabled: Vec<String> = snapshot["folders"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|folder| folder["id"].as_str().map(str::to_owned))
+        .collect();
+    if enabled.is_empty()
+        || enabled.len() != folder_ids.len()
+        || !enabled.iter().all(|id| folder_ids.contains(id))
+    {
+        return Err("The saved sharing list differs from this window. Save the enabled collections and try again.".into());
+    }
+    if previous
+        .as_ref()
+        .is_some_and(|pairing| pairing.folder_ids.iter().any(|id| !enabled.contains(id)))
+    {
+        return Err("Restore the previously shared collections before updating this pairing, or disconnect it.".into());
+    }
+    let token = login.drive_token().await?;
     let http = client()?;
-    let endpoint = format!("{FILES}/{id}");
-    let metadata = http
-        .get(&endpoint)
-        .bearer_auth(&token)
-        .query(&[("fields", "ownedByMe,appProperties")])
-        .send()
-        .await
-        .map_err(|_| "Could not verify the snapshot owner.")?;
-    let metadata: Value = read_json(metadata, 32_000).await?;
-    if metadata["ownedByMe"] != true || !metadata["appProperties"]["postdoveFolder"].is_string() {
-        return Err("Only a PostDove snapshot you own can be shared here.".into());
+    let key = format!("{:x}", Sha256::digest(email.as_bytes()));
+    // Persist the expanded lock before updating a file that may already be shared.
+    if let Some(pairing) = &previous {
+        crate::write_json(
+            &path,
+            &OnlinePairing {
+                email: email.clone(),
+                folder_ids: enabled.clone(),
+                file_id: pairing.file_id.clone(),
+            },
+        )?;
     }
+    let id = publish_pairing(
+        &http,
+        &token,
+        snapshot,
+        &key,
+        previous.as_ref().map(|p| p.file_id.as_str()),
+    )
+    .await?;
+    if previous.is_none() {
+        crate::write_json(
+            &path,
+            &OnlinePairing {
+                email: email.clone(),
+                folder_ids: enabled,
+                file_id: id.clone(),
+            },
+        )?;
+    }
+
+    if viewer_permissions(&http, &token, &id, &email)
+        .await?
+        .is_empty()
+    {
+        let response = http
+            .post(format!("{FILES}/{id}/permissions"))
+            .bearer_auth(&token)
+            .query(&[("fields", "id"), ("sendNotificationEmail", "false")])
+            .json(&json!({"type":"user","role":"reader","emailAddress":email}))
+            .send()
+            .await
+            .map_err(|_| "Could not grant Viewer access.")?;
+        let _: Value = read_json(response, 32_000).await?;
+    }
+    Ok(crate::firebase::notify(&firebase, &email, &id).await.err())
+}
+
+async fn viewer_permissions(
+    http: &Client,
+    token: &str,
+    id: &str,
+    email: &str,
+) -> Result<Vec<String>, String> {
+    let mut page = None;
+    let mut matches = Vec::new();
+    loop {
+        let request = http
+            .get(format!("{FILES}/{id}/permissions"))
+            .bearer_auth(token)
+            .query(&[(
+                "fields",
+                "nextPageToken,permissions(id,type,role,emailAddress)",
+            )]);
+        let request = match &page {
+            Some(page) => request.query(&[("pageToken", page)]),
+            None => request,
+        };
+        let response = request
+            .send()
+            .await
+            .map_err(|_| "Could not check Viewer access.")?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err("The shared snapshot could not be found in your Google Drive.".into());
+        }
+        let data: Value = read_json(response, 100_000).await?;
+        for permission in data["permissions"].as_array().into_iter().flatten() {
+            if permission["type"] == "user"
+                && permission["role"] == "reader"
+                && permission["emailAddress"]
+                    .as_str()
+                    .is_some_and(|address| address.eq_ignore_ascii_case(email))
+            {
+                if let Some(id) = permission["id"].as_str() {
+                    matches.push(id.to_owned());
+                }
+            }
+        }
+        page = data["nextPageToken"].as_str().map(str::to_owned);
+        if page.is_none() {
+            return Ok(matches);
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn drive_disconnect_pairing(
+    app: AppHandle,
+    login: State<'_, GoogleLogin>,
+    writes: State<'_, DriveWrites>,
+    firebase: State<'_, crate::firebase::Firebase>,
+    email: String,
+) -> Result<(), String> {
+    let _guard = writes.0.lock().await;
+    let (directory, _) = pairing_directory(&app, &firebase).await?;
+    let path = pairing_file(&directory, &email);
+    let _pairing_lock = lock_pairing(&path)?;
+    let pairing = read_pairing(&path)?.ok_or("This online pairing is no longer active.")?;
+    let token = login.drive_token().await?;
+    let http = client()?;
+    let id = file_id(&pairing.file_id)?;
+    let endpoint =
+        Url::parse(&format!("{FILES}/{id}/permissions")).map_err(|error| error.to_string())?;
     let response = http
-        .post(format!("{endpoint}/permissions"))
-        .bearer_auth(token)
-        .query(&[("fields", "id,role"), ("sendNotificationEmail", "false")])
-        .json(&json!({"type":"user","role":"reader","emailAddress":email}))
+        .get(format!("{FILES}/{id}"))
+        .bearer_auth(&token)
+        .query(&[("fields", "id")])
         .send()
         .await
-        .map_err(|_| "Could not grant Viewer access.")?;
-    let _: Value = read_json(response, 32_000).await?;
-    Ok(crate::firebase::notify(&firebase, email, &id).await.err())
+        .map_err(|_| "Could not check the shared snapshot.")?;
+    if response.status() != StatusCode::NOT_FOUND {
+        let _: File = read_json(response, 32_000).await?;
+        for permission in viewer_permissions(&http, &token, &id, &pairing.email).await? {
+            let mut url = endpoint.clone();
+            url.path_segments_mut()
+                .map_err(|_| "Invalid Drive permissions URL.")?
+                .push(&permission);
+            let response = http
+                .delete(url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|_| "Could not remove Viewer access.")?;
+            if response.status() != StatusCode::NOT_FOUND && !response.status().is_success() {
+                return Err(format!(
+                    "Could not remove Viewer access (HTTP {}).",
+                    response.status()
+                ));
+            }
+        }
+    }
+    crate::firebase::withdraw(&firebase, &pairing.email, &id).await?;
+    std::fs::remove_file(path).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
