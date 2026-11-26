@@ -63,6 +63,12 @@ Intel serta DEB untuk Linux x64 di **Releases → Postdove v<versi>**. ZIP rilis
 berisi folder `version/<versi>/` dengan ketiga installer.
 Gunakan nomor versi baru untuk rilis berikutnya.
 
+Workflow memerlukan empat repository secrets untuk konfigurasi login
+installer, yaitu `POSTDOVE_GOOGLE_CLIENT_ID`, `POSTDOVE_GOOGLE_CLIENT_SECRET`,
+`POSTDOVE_FIREBASE_PROJECT_ID`, dan `POSTDOVE_FIREBASE_API_KEY`. Gunakan
+konfigurasi OAuth Desktop dan Firebase client. Nilai tersebut ikut dikompilasi
+ke aplikasi, jadi jangan masukkan service account atau kredensial server.
+
 ## Penggunaan
 
 1. Pilih metode HTTP dan isi URL lengkap. Tambahkan query parameter langsung di URL.
@@ -161,17 +167,24 @@ privat dan port yang ditampilkan.
 
 1. Buka **Online Sharing** dan hubungkan akun Google. Berikan izin akses file
    yang dibuat atau dibuka lewat PostDove.
-2. Pilih folder lalu klik **Publish to Drive**. PostDove membuat folder
-   `My Drive/PostDove` jika diperlukan dan menyimpan satu JSON per folder.
-   Publikasi berikutnya memperbarui file yang sama.
-3. Isi alamat Google penerima dan klik **Share as Viewer**. Salin undangan yang
-   tampil atau gunakan email yang dikirim Google Drive.
-4. Penerima login dengan akun yang diundang dan menempelkan link ke
-   **Open shared folder**. Hasilnya tampil di **Collections → Online folders · Read-only**.
+2. Pilih **Share a folder**, isi folder dan alamat Google penerima, lalu klik
+   **Send invitation**. PostDove menyimpan satu JSON per folder di
+   `My Drive/PostDove`, memberi izin Viewer, lalu mengirim notifikasi.
+3. Untuk memperbarui snapshot tanpa mengirim undangan, pilih
+   **Drive options → Update snapshot**. PostDove memperbarui file yang sama.
+4. Penerima login dengan akun yang diundang dan membuka **Online Sharing →
+   Invitations**. Klik **Accept**, lalu **Open folder**. Hasilnya tampil di
+   **Collections → Online folders · Read-only**. **Decline** membuang
+   notifikasi. Izin file tetap dikelola oleh pemilik di Google Drive.
    Jika izin file Google Drive mengizinkan unduhan lewat browser tetapi PostDove
-   belum diizinkan membuka file tersebut lewat API, gunakan **Choose with
-   Google Picker** jika tersedia. Kamu juga bisa memilih **Open in Drive**,
-   mengunduh JSON, lalu memilih **Import downloaded JSON**.
+   belum diizinkan membuka file tersebut lewat API, buka **Open another way**.
+   Gunakan **Google Picker** jika tersedia, atau pilih **Open in Drive**,
+   unduh JSON, lalu pilih **Import JSON**.
+
+Setelah Google Drive memberi izin Viewer, PostDove juga mengirim notifikasi
+ke **Online Sharing → Invitations**. Undangan tersedia saat penerima login
+dan panel akan menyegarkan daftar selama aplikasi aktif. Firebase menyimpan
+pengirim, penerima, dan link Drive. Semua isi snapshot tetap di Google Drive.
 
 Snapshot hanya berisi metadata yang sama dengan LAN Sharing. Izin Viewer
 berlaku per file. Gunakan **Manage access in Drive** untuk mencabut izin.
@@ -187,9 +200,13 @@ PostDove sebagai test users. Jalankan PostDove dengan
 `POSTDOVE_GOOGLE_CLIENT_SECRET`. Gunakan kredensial Desktop app, yang merupakan
 client publik dan mengandalkan PKCE.
 
-PostDove menyimpan profil terverifikasi secara lokal. Token Drive disimpan di
-memori selama sesi aplikasi. Gunakan **Reconnect Google Drive** setelah menutup
-aplikasi atau saat token kedaluwarsa.
+PostDove mewajibkan login Firebase Authentication sebelum membuka workspace.
+Aktifkan provider Google di Firebase dan gunakan proyek yang sama dengan
+OAuth Desktop. Siapkan Firestore Standard dan deploy `firestore.rules`
+sebelum mengaktifkan undangan. Atur `POSTDOVE_FIREBASE_PROJECT_ID` dan
+`POSTDOVE_FIREBASE_API_KEY` dari konfigurasi Firebase. Sesi Firebase dan
+Drive disimpan di memori. Pengguna perlu login ulang setelah menutup
+aplikasi. Akses Drive diminta saat pengguna memilih **Connect Google Drive**.
 
 Untuk mengaktifkan pilihan langsung via Google Picker, aktifkan Google Picker
 API di proyek OAuth yang sama. Atur `POSTDOVE_GOOGLE_PICKER_KEY` ke API key

@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function googleUser() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+
+    match /invitations/{id} {
+      function addressedToMe() {
+        return googleUser() && resource.data.recipient == request.auth.token.email.lower();
+      }
+
+      allow get, delete: if addressedToMe();
+      allow list: if addressedToMe() && request.query.limit <= 50;
+      allow update: if addressedToMe()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['accepted'])
+        && request.resource.data.accepted == true;
+      allow create: if googleUser()
+        && id.matches('[a-f0-9]{64}')
+        && request.resource.data.keys().hasOnly(['senderUid', 'sender', 'recipient', 'link'])
+        && request.resource.data.senderUid == request.auth.uid
+        && request.resource.data.sender == request.auth.token.email.lower()
+        && request.resource.data.recipient is string
+        && request.resource.data.recipient.size() <= 254
+        && request.resource.data.recipient == request.resource.data.recipient.lower()
+        && request.resource.data.recipient.matches('[^ @]+@[^ @]+[.][^ @]+')
+        && request.resource.data.link is string
+        && request.resource.data.link.matches('https://drive[.]google[.]com/file/d/[A-Za-z0-9_-]{8,160}/view');
+    }
+  }
+}

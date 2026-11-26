@@ -191,9 +191,10 @@ pub async fn drive_publish(
 pub async fn drive_grant(
     login: State<'_, GoogleLogin>,
     writes: State<'_, DriveWrites>,
+    firebase: State<'_, crate::firebase::Firebase>,
     link: String,
     email: String,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let _guard = writes.0.lock().await;
     let token = login.drive_token().await?;
     let id = file_id(&link)?;
@@ -224,13 +225,13 @@ pub async fn drive_grant(
     let response = http
         .post(format!("{endpoint}/permissions"))
         .bearer_auth(token)
-        .query(&[("fields", "id,role")])
+        .query(&[("fields", "id,role"), ("sendNotificationEmail", "false")])
         .json(&json!({"type":"user","role":"reader","emailAddress":email}))
         .send()
         .await
         .map_err(|_| "Could not grant Viewer access.")?;
     let _: Value = read_json(response, 32_000).await?;
-    Ok(())
+    Ok(crate::firebase::notify(&firebase, email, &id).await.err())
 }
 
 #[tauri::command]

@@ -2,6 +2,7 @@
 
 mod lan;
 mod drive;
+mod firebase;
 mod online;
 
 use postdove::studio::{Sandbox, StudioRequest, StudioResponse};
@@ -226,8 +227,20 @@ async fn execute_studio(
 }
 
 fn main() {
+    let commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        load_workspace, load_studio, save_studio, execute_studio,
+        save_workspace, send_request, import_collection, export_collection, collection_json,
+        lan::lan_status, lan::lan_host_start, lan::lan_host_stop, lan::lan_revoke,
+        lan::lan_invite_info, lan::lan_pair, lan::lan_read, lan::lan_forget,
+        drive::drive_publish, drive::drive_grant, drive::drive_read,
+        drive::drive_pick, drive::drive_picker_configured, drive::drive_import,
+        drive::drive_open_in_browser, online::google_drive_connected, online::google_login,
+        online::google_profile, online::google_logout, firebase::firebase_invitations,
+        firebase::firebase_accept, firebase::firebase_dismiss
+    ];
     tauri::Builder::default()
         .manage(Sandbox::default())
+        .manage(firebase::Firebase::default())
         .manage(online::GoogleLogin::default())
         .manage(drive::DriveWrites::default())
         .setup(|app| {
@@ -237,36 +250,15 @@ fn main() {
             app.manage(lan);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            load_workspace,
-            load_studio,
-            save_studio,
-            execute_studio,
-            save_workspace,
-            send_request,
-            import_collection,
-            export_collection,
-            collection_json,
-            lan::lan_status,
-            lan::lan_host_start,
-            lan::lan_host_stop,
-            lan::lan_revoke,
-            lan::lan_invite_info,
-            lan::lan_pair,
-            lan::lan_read,
-            lan::lan_forget,
-            drive::drive_publish,
-            drive::drive_grant,
-            drive::drive_read,
-            drive::drive_pick,
-            drive::drive_picker_configured,
-            drive::drive_import,
-            drive::drive_open_in_browser,
-            online::google_drive_connected,
-            online::google_login,
-            online::google_profile,
-            online::google_logout
-        ])
+        .invoke_handler(move |call| {
+            if call.message.command() != "google_login"
+                && !call.message.webview_ref().state::<firebase::Firebase>().signed_in()
+            {
+                call.resolver.reject("Sign in to PostDove first.");
+                return true;
+            }
+            commands(call)
+        })
         .run(tauri::generate_context!())
         .expect("Could not start Postdove");
 }

@@ -3,10 +3,11 @@ import { CollectionVariablesDialog } from './components/CollectionVariablesDialo
 import { VariableEditor, VariableValue } from './components/VariableEditor';
 import { invoke } from '@tauri-apps/api/core';
 import { LanPanel, type LanStatus, type SharedSnapshot } from './components/LanPanel';
-import { OnlinePanel } from './components/OnlinePanel';
+import { OnlinePanel, type OnlineInvitation } from './components/OnlinePanel';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
+  Bell,
   ChevronDown,
   Cloud,
   Columns2,
@@ -76,7 +77,7 @@ function enabledVariable(variables: EnvironmentVariable[] | undefined, name: str
   return variables?.findLast(variable => variable.enabled && variable.key.trim() === name);
 }
 
-export default function App({ initial }: { initial: StudioWorkspace }) {
+export default function App({ initial, onLogout }: { initial: StudioWorkspace; onLogout: () => void }) {
   const [appearance, setAppearance] = useState(() => resolveAppearance(initial.appearance, initial.theme));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsDialog = useRef<HTMLDialogElement>(null);
@@ -120,6 +121,33 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
   const [lanOpen, setLanOpen] = useState(false);
   const [onlineOpen, setOnlineOpen] = useState(false);
   const [onlineSnapshot, setOnlineSnapshot] = useState<SharedSnapshot>();
+  const [invitations, setInvitations] = useState<OnlineInvitation[]>([]);
+  const pendingInvitations = invitations.filter(invitation => !invitation.accepted).length;
+  const [invitationError, setInvitationError] = useState('');
+  useEffect(() => {
+    let active = true;
+    let timer: number;
+    async function refresh() {
+      try {
+        if (!document.hidden) {
+          const current = await invoke<OnlineInvitation[]>('firebase_invitations');
+          if (active) {
+            setInvitations(current);
+            setInvitationError('');
+          }
+        }
+      } catch (error) {
+        if (active) setInvitationError(String(error));
+      } finally {
+        if (active) timer = window.setTimeout(refresh, 45_000);
+      }
+    }
+    void refresh();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [onlineOpen]);
   const [lanSharing, setLanSharing] = useState<boolean>();
   const [viewerAddress, setViewerAddress] = useState<string | null>(null);
   const [sharedSnapshot, setSharedSnapshot] = useState<SharedSnapshot>();
@@ -1351,7 +1379,17 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
       {lanOpen && <LanPanel onClose={() => setLanOpen(false)} onSharingChange={setLanSharing}
         onViewerAddressChange={setViewerAddress} snapshot={viewerAddress ? sharedSnapshot : undefined}
         onSnapshot={setSharedSnapshot} reportResult={reportResult} />}
-      {onlineOpen && <OnlinePanel folders={folders} onClose={() => setOnlineOpen(false)} onRead={setOnlineSnapshot} />}
+      {onlineOpen && <OnlinePanel folders={folders} onClose={() => setOnlineOpen(false)} onRead={snapshot => {
+        setOnlineSnapshot(snapshot);
+        if (!snapshot) return;
+        setActiveScreen('workbench');
+        if (isCompactViewport) setMobileDrawerOpen(true);
+        else setSidebarOpen(true);
+      }}
+        onLogout={onLogout} invitations={invitations} invitationError={invitationError}
+        onAccept={id => setInvitations(current => current.map(invitation =>
+          invitation.id === id ? { ...invitation, accepted: true } : invitation))}
+        onDismiss={id => setInvitations(current => current.filter(invitation => invitation.id !== id))} />}
       <footer className="h-[26px] px-3 bg-ui-surface border-t border-ui-border flex items-center justify-between text-[11px] text-ui-secondary select-none shrink-0">
         <div className="flex items-center gap-3">
           <button type="button" className="inline-flex shrink-0 items-center gap-1.5 hover:text-ui-ink"
@@ -1367,6 +1405,9 @@ export default function App({ initial }: { initial: StudioWorkspace }) {
           <button type="button" aria-label="Online Sharing" onClick={() => setOnlineOpen(true)}
             className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-secondary hover:bg-ui-elevated hover:text-ui-ink focus-visible:outline-ui-accent">
             <Cloud aria-hidden="true" className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Online Sharing</span>
+            {pendingInvitations > 0 && <span className="inline-flex items-center gap-0.5 text-ui-accent" title={`${pendingInvitations} pending invitations`} aria-live="polite">
+              <Bell className="h-3 w-3" aria-hidden="true" /> {pendingInvitations}
+            </span>}
           </button>
           {activeScreen === 'workbench' && !isCompactViewport && (
             <button

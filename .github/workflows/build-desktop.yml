@@ -66,13 +66,20 @@ jobs:
           sudo apt-get install -y build-essential libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - run: npm ci
       - name: Build installer
-        if: runner.os != 'macOS'
-        run: npm run tauri build -- --bundles ${{ matrix.bundles }} -- --locked
-      - name: Build macOS installer with ad hoc signing
-        if: runner.os == 'macOS'
         env:
-          APPLE_SIGNING_IDENTITY: '-'
-        run: npm run tauri build -- --bundles dmg -- --locked
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+          POSTDOVE_GOOGLE_CLIENT_ID: ${{ secrets.POSTDOVE_GOOGLE_CLIENT_ID }}
+          POSTDOVE_GOOGLE_CLIENT_SECRET: ${{ secrets.POSTDOVE_GOOGLE_CLIENT_SECRET }}
+          POSTDOVE_FIREBASE_PROJECT_ID: ${{ secrets.POSTDOVE_FIREBASE_PROJECT_ID }}
+          POSTDOVE_FIREBASE_API_KEY: ${{ secrets.POSTDOVE_FIREBASE_API_KEY }}
+        run: |
+          for setting in POSTDOVE_GOOGLE_CLIENT_ID POSTDOVE_GOOGLE_CLIENT_SECRET POSTDOVE_FIREBASE_PROJECT_ID POSTDOVE_FIREBASE_API_KEY; do
+            if [[ -z "${!setting}" ]]; then
+              echo "::error::Missing release setting: $setting"
+              exit 1
+            fi
+          done
+          npm run tauri build -- --bundles ${{ matrix.bundles }} -- --locked
       - name: Stage installer
         env:
           VERSION: ${{ needs.version.outputs.number }}

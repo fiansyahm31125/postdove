@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     net::Ipv4Addr,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager, State};
@@ -92,6 +91,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Value, String> {
 pub struct GoogleLogin {
     signing_in: Mutex<()>,
     drive: Mutex<Option<DriveSession>>,
+    profile: Mutex<Option<GoogleProfile>>,
 }
 
 struct DriveSession {
@@ -119,7 +119,7 @@ pub async fn google_drive_connected(login: State<'_, GoogleLogin>) -> Result<boo
     Ok(login.drive_token().await.is_ok())
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct GoogleProfile {
     sub: String,
     name: Option<String>,
@@ -127,36 +127,27 @@ pub struct GoogleProfile {
     email_verified: bool,
 }
 
-fn profile_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|path| path.join("google-profile.json"))
-        .map_err(|error| error.to_string())
+#[tauri::command]
+pub async fn google_profile(
+    login: State<'_, GoogleLogin>,
+) -> Result<Option<GoogleProfile>, String> {
+    Ok(login.profile.lock().await.clone())
 }
 
 #[tauri::command]
-pub fn google_profile(app: AppHandle) -> Result<Option<GoogleProfile>, String> {
-    match std::fs::read(profile_path(&app)?) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|_| "Could not read the local profile.".into()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.to_string()),
-    }
-}
-
-#[tauri::command]
-pub async fn google_logout(app: AppHandle, login: State<'_, GoogleLogin>) -> Result<(), String> {
+pub async fn google_logout(
+    app: AppHandle,
+    login: State<'_, GoogleLogin>,
+    firebase: State<'_, crate::firebase::Firebase>,
+) -> Result<(), String> {
     let _lock = login
         .signing_in
         .try_lock()
         .map_err(|_| "Wait for the current sign-in to finish.")?;
-    match std::fs::remove_file(profile_path(&app)?) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.to_string()),
-    }
+    crate::lan::lan_host_stop(app.state::<std::sync::Arc<crate::lan::Lan>>()).await?;
     *login.drive.lock().await = None;
+    *login.profile.lock().await = None;
+    firebase.clear().await;
     Ok(())
 }
 
@@ -238,14 +229,15 @@ async fn callback(listener: TcpListener, expected_state: &str) -> Result<String,
 
 #[tauri::command]
 pub async fn google_login(
-    app: AppHandle,
     login: State<'_, GoogleLogin>,
+    firebase: State<'_, crate::firebase::Firebase>,
     drive: Option<bool>,
 ) -> Result<GoogleProfile, String> {
     let _lock = login
         .signing_in
         .try_lock()
         .map_err(|_| "A Google sign-in is already in progress.")?;
+    crate::firebase::ensure_configured()?;
     let config = |name, embedded| std::env::var(name).ok().or(embedded);
     let id = google_client_id()
         .ok_or("Google sign-in is not configured. Set POSTDOVE_GOOGLE_CLIENT_ID for a Google Desktop OAuth client.")?;
@@ -331,7 +323,16 @@ pub async fn google_login(
                 .into(),
         );
     }
-    crate::write_json(&profile_path(&app)?, &profile)?;
+    firebase
+        .authenticate(
+            token["id_token"]
+                .as_str()
+                .ok_or("Google did not return an identity token.")?,
+            &profile.email,
+            needs_drive,
+        )
+        .await?;
+    *login.profile.lock().await = Some(profile.clone());
     *login.drive.lock().await = needs_drive.then(|| DriveSession {
         token: access.to_owned(),
         expires: Instant::now()
