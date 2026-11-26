@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choose a shared PostDove folder</title>
+<body style="font: 16px system-ui; margin: 3rem; color-scheme: light dark">
+  <h1>Choose a shared PostDove folder</h1>
+  <p id="status" role="status">Loading Google Picker…</p>
+  <button id="cancel" type="button">Cancel</button>
+  <script nonce="{{NONCE}}">
+    const config = {{CONFIG}};
+    const status = document.getElementById('status');
+    document.getElementById('cancel').onclick = () => location.replace(config.resultPath);
+    function loadPicker() {
+      gapi.load('picker', {
+        callback() {
+          try {
+            const view = new google.picker.DocsView().setMimeTypes('application/json');
+            const picker = new google.picker.PickerBuilder()
+              .setAppId(config.appId)
+              .setDeveloperKey(config.developerKey)
+              .setOAuthToken(config.accessToken)
+              .setOrigin(location.origin)
+              .addView(view)
+              .setCallback(data => {
+                if (data.action === google.picker.Action.PICKED && data.docs?.[0]?.id) {
+                  location.replace(config.resultPath + '?' + new URLSearchParams({ id: data.docs[0].id }));
+                } else if (data.action === google.picker.Action.CANCEL) {
+                  location.replace(config.resultPath);
+                }
+              })
+              .build();
+            picker.setVisible(true);
+            status.textContent = 'Select the JSON file that was shared with your Google account.';
+          } catch {
+            status.textContent = 'Google Picker could not open. Return to PostDove and import the JSON from Drive.';
+          }
+        },
+        onerror() { status.textContent = 'Google Picker could not load. Return to PostDove and import the JSON from Drive.'; },
+      });
+    }
+    const script = document.createElement('script');
+    script.src = 'https://apis.google.com/js/api.js';
+    script.onload = loadPicker;
+    script.onerror = () => { status.textContent = 'Could not connect to Google Picker.'; };
+    document.head.append(script);
+  </script>
+</body>
+</html>

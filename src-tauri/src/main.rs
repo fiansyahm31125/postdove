@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod lan;
+mod drive;
 mod online;
 
 use postdove::studio::{Sandbox, StudioRequest, StudioResponse};
@@ -228,6 +229,7 @@ fn main() {
     tauri::Builder::default()
         .manage(Sandbox::default())
         .manage(online::GoogleLogin::default())
+        .manage(drive::DriveWrites::default())
         .setup(|app| {
             let workspace = studio_path(app.handle()).map_err(std::io::Error::other)?;
             let directory = app.path().app_data_dir()?.join("lan");
@@ -253,8 +255,14 @@ fn main() {
             lan::lan_pair,
             lan::lan_read,
             lan::lan_forget,
-            online::online_publish,
-            online::online_read,
+            drive::drive_publish,
+            drive::drive_grant,
+            drive::drive_read,
+            drive::drive_pick,
+            drive::drive_picker_configured,
+            drive::drive_import,
+            drive::drive_open_in_browser,
+            online::google_drive_connected,
             online::google_login,
             online::google_profile,
             online::google_logout

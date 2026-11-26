@@ -157,32 +157,41 @@ semua pairing, atau **Forget host** di viewer untuk melupakan induk di PC itu.
 Apabila firewall Windows meminta izin, LAN Sharing menggunakan profil jaringan
 privat dan port yang ditampilkan.
 
-## Berbagi folder lewat internet
+## Berbagi folder lewat Google Drive
 
-1. Buat repository GitHub **privat** khusus untuk snapshot dan beri penerima akses yang sesuai.
-2. Di PostDove, buka **Online Sharing**, masukkan `owner/repository` dan token GitHub
-   yang berwenang menulis Contents di repository tersebut. Pilih folder, lalu klik
-   **Publish selected folders**. Kirim link undangan yang tampil.
-3. Penerima menempelkan link itu dan token GitHub pribadinya yang punya akses baca
-   Contents di **Online Sharing → Open shared folders**. Hasilnya muncul di
-   **Collections → Online folders · Read-only**.
+1. Buka **Online Sharing** dan hubungkan akun Google. Berikan izin akses file
+   yang dibuat atau dibuka lewat PostDove.
+2. Pilih folder lalu klik **Publish to Drive**. PostDove membuat folder
+   `My Drive/PostDove` jika diperlukan dan menyimpan satu JSON per folder.
+   Publikasi berikutnya memperbarui file yang sama.
+3. Isi alamat Google penerima dan klik **Share as Viewer**. Salin undangan yang
+   tampil atau gunakan email yang dikirim Google Drive.
+4. Penerima login dengan akun yang diundang dan menempelkan link ke
+   **Open shared folder**. Hasilnya tampil di **Collections → Online folders · Read-only**.
+   Jika izin file Google Drive mengizinkan unduhan lewat browser tetapi PostDove
+   belum diizinkan membuka file tersebut lewat API, gunakan **Choose with
+   Google Picker** jika tersedia. Kamu juga bisa memilih **Open in Drive**,
+   mengunduh JSON, lalu memilih **Import downloaded JSON**.
 
-GitHub Pages menampilkan panduan undangan. Snapshot disimpan oleh GitHub API
-di repository privat dan bisa dibuka saat komputer induk mati. Terbitkan
-snapshot baru setelah mengubah folder dan klik **Open shared folders** untuk
-membaca pembaruan. Snapshot hanya berisi metadata yang sama dengan LAN Sharing.
-Menerbitkan snapshot kosong mengosongkan daftar terbaru. Riwayat commit masih
-tersedia untuk pengguna yang memiliki akses repository.
+Snapshot hanya berisi metadata yang sama dengan LAN Sharing. Izin Viewer
+berlaku per file. Gunakan **Manage access in Drive** untuk mencabut izin.
+Publikasikan ulang untuk memperbarui snapshot. Penerima bisa membuka file saat
+komputer induk mati. Salinan yang sudah diunduh tetap ada pada penerima.
 
-### Google Sign-In
+### Konfigurasi Google Sign-In
 
-Buat OAuth client dengan tipe **Desktop app** di Google Cloud, atur consent
-screen, dan tambahkan akun penguji apabila aplikasi masih dalam mode Testing.
-Jalankan PostDove dengan `POSTDOVE_GOOGLE_CLIENT_ID` dan, bila client
-membutuhkannya, `POSTDOVE_GOOGLE_CLIENT_SECRET`. Nilai ini juga bisa diatur
-saat compile untuk distribusi desktop. Gunakan kredensial Desktop app, yang
-merupakan client publik dan mengandalkan PKCE.
+Buat OAuth client tipe **Desktop app** di Google Cloud. Aktifkan Google Drive
+API pada proyek yang sama. Dalam mode Testing, tambahkan akun yang akan memakai
+PostDove sebagai test users. Jalankan PostDove dengan
+`POSTDOVE_GOOGLE_CLIENT_ID` dan, jika diminta oleh client,
+`POSTDOVE_GOOGLE_CLIENT_SECRET`. Gunakan kredensial Desktop app, yang merupakan
+client publik dan mengandalkan PKCE.
 
-Di panel **Online Sharing**, tombol **Sign in with Google** membuka browser sistem.
-PostDove menyimpan profil terverifikasi secara lokal. Akses repository tetap
-diatur GitHub dan token GitHub hanya disimpan di sesi panel.
+PostDove menyimpan profil terverifikasi secara lokal. Token Drive disimpan di
+memori selama sesi aplikasi. Gunakan **Reconnect Google Drive** setelah menutup
+aplikasi atau saat token kedaluwarsa.
+
+Untuk mengaktifkan pilihan langsung via Google Picker, aktifkan Google Picker
+API di proyek OAuth yang sama. Atur `POSTDOVE_GOOGLE_PICKER_KEY` ke API key
+yang dibatasi untuk Google Picker API. Picker berjalan di browser melalui
+loopback lokal dan memakai project number dari OAuth client Desktop.
