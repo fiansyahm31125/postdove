@@ -16,6 +16,7 @@ use tokio::{io::AsyncWriteExt, net::TcpListener, sync::Mutex, time::timeout};
 
 const FILES: &str = "https://www.googleapis.com/drive/v3/files";
 const UPLOAD: &str = "https://www.googleapis.com/upload/drive/v3/files";
+const EDITABLE_FIELDS: [&str; 5] = ["name", "method", "url", "headers", "parameters"];
 
 #[derive(Default)]
 pub struct DriveWrites(Mutex<()>);
@@ -30,7 +31,7 @@ struct FileList {
     files: Vec<File>,
 }
 
-fn file_id(input: &str) -> Result<String, String> {
+pub(crate) fn file_id(input: &str) -> Result<String, String> {
     let input = input.trim();
     let parsed;
     let id = if let Ok(url) = Url::parse(input) {
@@ -128,6 +129,30 @@ async fn publish_pairing(
     key: &str,
     previous: Option<&str>,
 ) -> Result<String, String> {
+    if let Some(id) = previous {
+        let (prior, _) = read_snapshot_file(token, &file_id(id)?).await?;
+        let edited = prior["requests"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|request| request["editedOnline"] == true)
+            .filter_map(|request| Some((request["id"].as_str()?, request)))
+            .collect::<std::collections::HashMap<_, _>>();
+        for request in snapshot["requests"].as_array_mut().into_iter().flatten() {
+            if let Some(previous) = request["id"].as_str().and_then(|id| edited.get(id)) {
+                for field in EDITABLE_FIELDS {
+                    request[field] = previous[field].clone();
+                }
+                request["editedOnline"] = json!(true);
+                request["onlineEditFields"] = previous["onlineEditFields"].clone();
+                request["onlineEditAt"] = previous["onlineEditAt"].clone();
+                let config = crate::online::online_config(&previous["onlineConfig"]);
+                if !config.is_empty() {
+                    request["onlineConfig"] = Value::Object(config);
+                }
+            }
+        }
+    }
     snapshot["format"] = json!("postdove-drive-v1");
     let content = serde_json::to_vec(&snapshot).map_err(|_| "Could not encode the snapshot.")?;
     if content.len() > MAX_BYTES {
@@ -136,6 +161,7 @@ async fn publish_pairing(
     let mut metadata = json!({
         "name": "Shared collections.json",
         "mimeType": "application/json",
+        "writersCanShare": false,
         "appProperties": {"postdovePairing":key}
     });
     let (method, endpoint) = match previous {
@@ -226,6 +252,10 @@ pub async fn drive_pairings(
 ) -> Result<Vec<OnlinePairing>, String> {
     let _guard = writes.0.lock().await;
     let (directory, _) = pairing_directory(&app, &firebase).await?;
+    load_pairings(&directory)
+}
+
+fn load_pairings(directory: &Path) -> Result<Vec<OnlinePairing>, String> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
@@ -245,6 +275,62 @@ pub async fn drive_pairings(
     }
     pairings.sort_by(|a, b| a.email.cmp(&b.email));
     Ok(pairings)
+}
+
+#[tauri::command]
+pub async fn drive_outgoing_edits(
+    app: AppHandle,
+    login: State<'_, GoogleLogin>,
+    firebase: State<'_, crate::firebase::Firebase>,
+) -> Result<Vec<Value>, String> {
+    let (directory, _) = pairing_directory(&app, &firebase).await?;
+    let pairings = load_pairings(&directory)?;
+    let token = login.drive_token().await?;
+    let mut edits = Vec::new();
+    for pairing in pairings {
+        let Ok(id) = file_id(&pairing.file_id) else {
+            continue;
+        };
+        let Ok((snapshot, _)) = read_snapshot_file(&token, &id).await else {
+            continue;
+        };
+        let encoded = serde_json::to_vec(&snapshot).map_err(|error| error.to_string())?;
+        let Ok(public) = decode_snapshot(&encoded) else {
+            continue;
+        };
+        for raw in snapshot["requests"].as_array().into_iter().flatten() {
+            if raw["editedOnline"] != true {
+                continue;
+            }
+            let Some(request) = public["requests"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|request| request["id"] == raw["id"])
+            else {
+                continue;
+            };
+            if !request["folderId"]
+                .as_str()
+                .is_some_and(|folder| pairing.folder_ids.iter().any(|id| id == folder))
+            {
+                continue;
+            }
+            let fields: Vec<_> = EDITABLE_FIELDS
+                .into_iter()
+                .filter(|&field| {
+                    raw["onlineEditFields"]
+                        .as_array()
+                        .is_none_or(|fields| fields.iter().any(|value| value == field))
+                })
+                .collect();
+            let stamp = raw["onlineEditAt"].as_u64().unwrap_or(0);
+            let content = json!([id, request, fields]).to_string();
+            let revision = format!("{stamp:020}-{:x}", Sha256::digest(content));
+            edits.push(json!({"request":request,"fields":fields,"revision":revision}));
+        }
+    }
+    Ok(edits)
 }
 
 #[tauri::command]
@@ -322,29 +408,46 @@ pub async fn drive_share_enabled(
         )?;
     }
 
-    if viewer_permissions(&http, &token, &id, &email)
-        .await?
-        .is_empty()
-    {
+    let permissions = recipient_permissions(&http, &token, &id, &email).await?;
+    if permissions.is_empty() {
         let response = http
             .post(format!("{FILES}/{id}/permissions"))
             .bearer_auth(&token)
             .query(&[("fields", "id"), ("sendNotificationEmail", "false")])
-            .json(&json!({"type":"user","role":"reader","emailAddress":email}))
+            .json(&json!({"type":"user","role":"writer","emailAddress":email}))
             .send()
             .await
-            .map_err(|_| "Could not grant Viewer access.")?;
+            .map_err(|_| "Could not grant Editor access.")?;
         let _: Value = read_json(response, 32_000).await?;
+    } else {
+        for (permission, role) in permissions {
+            if role == "writer" {
+                continue;
+            }
+            let mut url =
+                Url::parse(&format!("{FILES}/{id}/permissions")).map_err(|e| e.to_string())?;
+            url.path_segments_mut()
+                .map_err(|_| "Invalid Drive permissions URL.")?
+                .push(&permission);
+            let response = http
+                .patch(url)
+                .bearer_auth(&token)
+                .json(&json!({"role":"writer"}))
+                .send()
+                .await
+                .map_err(|_| "Could not upgrade the pairing to Editor access.")?;
+            let _: Value = read_json(response, 32_000).await?;
+        }
     }
     Ok(crate::firebase::notify(&firebase, &email, &id).await.err())
 }
 
-async fn viewer_permissions(
+async fn recipient_permissions(
     http: &Client,
     token: &str,
     id: &str,
     email: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<(String, String)>, String> {
     let mut page = None;
     let mut matches = Vec::new();
     loop {
@@ -362,20 +465,23 @@ async fn viewer_permissions(
         let response = request
             .send()
             .await
-            .map_err(|_| "Could not check Viewer access.")?;
+            .map_err(|_| "Could not check sharing permissions.")?;
         if response.status() == StatusCode::NOT_FOUND {
             return Err("The shared snapshot could not be found in your Google Drive.".into());
         }
         let data: Value = read_json(response, 100_000).await?;
         for permission in data["permissions"].as_array().into_iter().flatten() {
             if permission["type"] == "user"
-                && permission["role"] == "reader"
+                && matches!(permission["role"].as_str(), Some("reader" | "writer"))
                 && permission["emailAddress"]
                     .as_str()
                     .is_some_and(|address| address.eq_ignore_ascii_case(email))
             {
                 if let Some(id) = permission["id"].as_str() {
-                    matches.push(id.to_owned());
+                    matches.push((
+                        id.to_owned(),
+                        permission["role"].as_str().unwrap_or_default().to_owned(),
+                    ));
                 }
             }
         }
@@ -413,7 +519,7 @@ pub async fn drive_disconnect_pairing(
         .map_err(|_| "Could not check the shared snapshot.")?;
     if response.status() != StatusCode::NOT_FOUND {
         let _: File = read_json(response, 32_000).await?;
-        for permission in viewer_permissions(&http, &token, &id, &pairing.email).await? {
+        for (permission, _) in recipient_permissions(&http, &token, &id, &pairing.email).await? {
             let mut url = endpoint.clone();
             url.path_segments_mut()
                 .map_err(|_| "Invalid Drive permissions URL.")?
@@ -423,10 +529,10 @@ pub async fn drive_disconnect_pairing(
                 .bearer_auth(&token)
                 .send()
                 .await
-                .map_err(|_| "Could not remove Viewer access.")?;
+                .map_err(|_| "Could not remove sharing access.")?;
             if response.status() != StatusCode::NOT_FOUND && !response.status().is_success() {
                 return Err(format!(
-                    "Could not remove Viewer access (HTTP {}).",
+                    "Could not remove sharing access (HTTP {}).",
                     response.status()
                 ));
             }
@@ -445,6 +551,14 @@ pub async fn drive_read(login: State<'_, GoogleLogin>, link: String) -> Result<V
 }
 
 async fn read_snapshot(token: &str, id: &str) -> Result<Value, String> {
+    let (snapshot, _) = read_snapshot_file(token, id).await?;
+    decode_snapshot(&serde_json::to_vec(&snapshot).map_err(|_| "Could not encode the snapshot.")?)
+}
+
+async fn read_snapshot_file(
+    token: &str,
+    id: &str,
+) -> Result<(Value, Option<reqwest::header::HeaderValue>), String> {
     let response = client()?
         .get(format!("{FILES}/{id}"))
         .bearer_auth(token)
@@ -456,9 +570,130 @@ async fn read_snapshot(token: &str, id: &str) -> Result<Value, String> {
         response.status(),
         StatusCode::NOT_FOUND | StatusCode::FORBIDDEN
     ) {
-        return Err("Drive did not grant PostDove access to this file. Open it in Drive with the invited account, download the JSON, then import it here.".into());
+        return Err(
+            "DRIVE_FILE_ACCESS: Google Drive has not allowed PostDove to read this file.".into(),
+        );
     }
-    decode_snapshot(&read_body(response, MAX_BYTES).await?)
+    let etag = response.headers().get(reqwest::header::ETAG).cloned();
+    let bytes = read_body(response, MAX_BYTES).await?;
+    let snapshot =
+        serde_json::from_slice(&bytes).map_err(|_| "The file is not a PostDove snapshot.")?;
+    Ok((snapshot, etag))
+}
+
+#[tauri::command]
+pub async fn drive_save_request(
+    login: State<'_, GoogleLogin>,
+    writes: State<'_, DriveWrites>,
+    link: String,
+    request_id: String,
+    expected: Value,
+    draft: Value,
+) -> Result<Value, String> {
+    let _guard = writes.0.lock().await;
+    let id = file_id(&link)?;
+    let token = login.drive_token().await?;
+    let (mut snapshot, etag) = read_snapshot_file(&token, &id).await?;
+    if snapshot["format"] != "postdove-drive-v1" {
+        return Err("The file is not a PostDove snapshot.".into());
+    }
+    let request = snapshot["requests"]
+        .as_array_mut()
+        .into_iter()
+        .flatten()
+        .find(|request| request["id"].as_str() == Some(request_id.as_str()))
+        .ok_or("This request is no longer in the online collection.")?;
+    for field in EDITABLE_FIELDS {
+        if request[field] != expected[field] {
+            return Err(
+                "The online request changed since you started editing. Reopen it before saving."
+                    .into(),
+            );
+        }
+    }
+    let previous_config = crate::online::online_config(&request["onlineConfig"]);
+    if previous_config != crate::online::online_config(&expected["onlineConfig"]) {
+        return Err("The online request configuration changed. Reopen it before saving.".into());
+    }
+    let mut config = previous_config.clone();
+    config.extend(crate::online::online_config(&draft["onlineConfig"]));
+    let draft = json!({
+        "folders": [{"id":"online", "name":"Online"}],
+        "requests": [{
+            "id": request_id, "folderId":"online",
+            "name":draft["name"], "method":draft["method"], "url":draft["url"],
+            "headers":draft["headers"], "params":draft["params"],
+        }]
+    });
+    let safe = crate::lan::public_snapshot(&draft, |_| true);
+    let edit = safe["requests"].get(0).ok_or("Invalid online request.")?;
+    let changed: Vec<_> = EDITABLE_FIELDS
+        .into_iter()
+        .filter(|&field| request[field] != edit[field])
+        .collect();
+    if changed.is_empty() && config == previous_config {
+        return Err("There are no changes to save.".into());
+    }
+    if !config.is_empty() {
+        request["onlineConfig"] = Value::Object(config);
+    }
+    let mut fields: Vec<_> = EDITABLE_FIELDS
+        .into_iter()
+        .filter(|&field| {
+            request["onlineEditFields"]
+                .as_array()
+                .is_some_and(|fields| fields.iter().any(|value| value == field))
+        })
+        .collect();
+    if request["editedOnline"] == true && request["onlineEditFields"].is_null() {
+        fields = EDITABLE_FIELDS.to_vec();
+    }
+    for field in changed {
+        request[field] = edit[field].clone();
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    }
+    request["editedOnline"] = json!(true);
+    request["onlineEditFields"] = json!(fields);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "Could not determine the edit timestamp.")?
+        .as_millis() as u64;
+    request["onlineEditAt"] = json!(
+        timestamp.max(
+            request["onlineEditAt"]
+                .as_u64()
+                .unwrap_or(0)
+                .saturating_add(1)
+        )
+    );
+    let content = serde_json::to_vec(&snapshot).map_err(|_| "Could not encode the snapshot.")?;
+    if content.len() > MAX_BYTES {
+        return Err("The online snapshot exceeds the size limit.".into());
+    }
+
+    let upload = client()?
+        .patch(format!("{UPLOAD}/{id}"))
+        .bearer_auth(&token)
+        .query(&[("uploadType", "media"), ("fields", "id")])
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    let upload = match etag {
+        Some(etag) => upload.header(reqwest::header::IF_MATCH, etag),
+        None => upload,
+    };
+    let response = upload
+        .body(content.clone())
+        .send()
+        .await
+        .map_err(|_| "Could not save the online request.")?;
+    match response.status() {
+        StatusCode::FORBIDDEN => return Err("Google Drive denied editing. Ask the owner to run Update collections to upgrade the pairing to Editor access.".into()),
+        StatusCode::PRECONDITION_FAILED => return Err("The online collection changed while saving. Refresh it and try again.".into()),
+        _ => {}
+    }
+    let _: File = read_json(response, 32_000).await?;
+    decode_snapshot(&content)
 }
 
 fn picker_config() -> Option<(String, String)> {
@@ -587,10 +822,13 @@ mod tests {
     }
 
     #[test]
-    fn imported_snapshot_returns_only_the_published_read_only_shape() {
+    fn imported_snapshot_keeps_multiple_shared_folders_and_only_public_fields() {
         let file = json!({
             "format":"postdove-drive-v1",
-            "folders":[{"id":"visible","name":"Shared","env":"private-value"}],
+            "folders":[
+                {"id":"visible","name":"Shared","env":"private-value"},
+                {"id":"nested","name":"Shared child","desktopParent":"visible"}
+            ],
             "requests":[{
                 "id":"r","name":"Sample","folderId":"visible","method":"GET",
                 "url":"https://user:secret@example.com/test?key=private-value",
@@ -601,6 +839,8 @@ mod tests {
             }]
         });
         let public = decode_snapshot(&serde_json::to_vec(&file).unwrap()).unwrap();
+        assert_eq!(public["folders"].as_array().unwrap().len(), 2);
+        assert_eq!(public["folders"][1]["desktopParent"], "visible");
         assert_eq!(public["requests"].as_array().unwrap().len(), 1);
         assert_eq!(public["requests"][0]["url"], "https://example.com/test");
         assert_eq!(public["requests"][0]["headers"], json!(["Accept"]));

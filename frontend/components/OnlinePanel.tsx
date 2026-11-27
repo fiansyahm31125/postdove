@@ -141,7 +141,7 @@ export function OnlinePanel({
           },
         });
         if (notificationError) {
-          setStatus('Viewer access was granted. Send the invitation again to retry the notification.');
+          setStatus('Editor access was granted. Send the invitation again to retry the notification.');
           setError(notificationError);
         } else {
           setRecipient('');
@@ -200,6 +200,7 @@ export function OnlinePanel({
         {!invitationError && !invitations.length && <p className="py-2 text-ui-secondary">No invitations yet.</p>}
         {invitations.map(invitation => {
           const load = invitationSnapshots[invitation.id];
+          const needsFileAccess = load?.status === 'failed' && load.error.startsWith('DRIVE_FILE_ACCESS:');
           return (
             <div key={invitation.id} className="flex flex-wrap items-center gap-2 border-b border-ui-border pb-2">
               <div className="min-w-[9rem] flex-1">
@@ -217,12 +218,21 @@ export function OnlinePanel({
                   await invoke('firebase_dismiss', { id: invitation.id });
                   onDismiss(invitation.id);
                 })}>{invitation.accepted ? 'Remove' : 'Decline'}</button>
+              {invitation.accepted && (needsFileAccess || (!connected && !load)) && <div className="w-full">
+                <button type="button" className={primaryStyle} disabled={!!busy}
+                  onClick={() => void run('Waiting for Google Picker in your browser…', async () => {
+                    await invoke('drive_authorize_invitation', { link: invitation.link });
+                    onDriveConnected(true);
+                    onRetryLoad(invitation.id);
+                    setStatus('File access granted. Loading collection…');
+                  })}>Allow access to this file</button>
+              </div>}
               {invitation.accepted && load?.status === 'loading' && <p role="status" className="w-full text-[11px] text-ui-secondary">Loading collection…</p>}
               {invitation.accepted && load?.status === 'ready' && <p className="w-full text-[11px] text-ui-secondary">Available in Collections.</p>}
               {invitation.accepted && load?.status === 'failed' && <div className="w-full space-y-1 text-[11px]">
-                <p className="text-ui-error-text">{load.error}</p>
+                <p className="text-ui-error-text">{needsFileAccess ? load.error.slice('DRIVE_FILE_ACCESS:'.length).trim() : load.error}</p>
                 <div className="flex flex-wrap gap-2">
-                  {connected && <button type="button" className={actionStyle} onClick={() => onRetryLoad(invitation.id)}>Retry loading</button>}
+                  {connected && <button type="button" className={actionStyle} disabled={!!busy} onClick={() => onRetryLoad(invitation.id)}>Retry loading</button>}
                   <button type="button" className={actionStyle} onClick={() => {
                     setOpenLink(invitation.link);
                     if (options.current) options.current.open = true;

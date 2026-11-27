@@ -64,6 +64,8 @@ export interface ApiRequest {
   desktopVariables?: EnvironmentVariable[];
   collectionProfile?: CollectionProfile;
   postmanItem?: unknown;
+  onlineCopyOf?: string;
+  appliedOnlineRevision?: string;
 }
 
 export interface CollectionFolder {
@@ -77,6 +79,7 @@ export interface CollectionFolder {
   desktopParent?: string;
   desktopPath?: string;
   lanShared?: boolean;
+  onlineCopyOf?: string;
 }
 
 export interface EnvironmentVariable {

@@ -13,9 +13,9 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { ApiRequest, CollectionFolder } from '../types/api';
+import type { ApiRequest, CollectionFolder, HttpMethod } from '../types/api';
 import { folderAncestors } from '../utils/folderTree';
-import { MethodBadge } from './MethodBadge';
+import { METHOD_STYLES, MethodBadge } from './MethodBadge';
 import { SharedWorkspace, type SharedSnapshot } from './LanPanel';
 
 interface SidebarProps {
@@ -35,6 +35,7 @@ interface SidebarProps {
   sharingStatusUnavailable: boolean;
   sharedSnapshot?: SharedSnapshot;
   onlineSnapshot?: SharedSnapshot;
+  onOpenOnlineRequest: (id: string) => void;
   onOpenImportCurl: () => void;
   onImportPostman?: () => void;
   onOpenFolder: (id: string) => void;
@@ -61,6 +62,7 @@ export function Sidebar({
   sharingStatusUnavailable,
   sharedSnapshot,
   onlineSnapshot,
+  onOpenOnlineRequest,
   onOpenImportCurl,
   onImportPostman,
   onOpenFolder,
@@ -83,18 +85,21 @@ export function Sidebar({
     });
   };
 
+  const treeFolders = useMemo(() => [
+    ...folders,
+    ...(onlineSnapshot?.folders ?? []).map(folder => ({
+      ...folder, desktopParent: folder.desktopParent ?? undefined, description: '', online: true as const,
+    })),
+  ], [folders, onlineSnapshot]);
   const filteredRequests = useMemo(() => {
+    const all = [...requests, ...(onlineSnapshot?.requests ?? [])];
     const q = search.trim().toLowerCase();
-    if (!q) return requests;
-    return requests.filter(
-      (r) =>
-        r.name.toLowerCase().includes(q) ||
-        r.url.toLowerCase().includes(q) ||
-        r.method.toLowerCase().includes(q)
-    );
-  }, [requests, search]);
+    if (!q) return all;
+    return all.filter(request => [request.name, request.url, request.method]
+      .some(value => value.toLowerCase().includes(q)));
+  }, [requests, onlineSnapshot, search]);
 
-  const byId = useMemo(() => new Map(folders.map(folder => [folder.id, folder])), [folders]);
+  const byId = useMemo(() => new Map(treeFolders.map(folder => [folder.id, folder])), [treeFolders]);
   const visibleIds = new Set(filteredRequests.flatMap(request => [
     request.folderId, ...folderAncestors(request.folderId, byId).map(folder => folder.id),
   ]));
@@ -117,9 +122,10 @@ export function Sidebar({
     }
   };
 
-  function renderFolder(folder: CollectionFolder, depth: number) {
+  function renderFolder(folder: typeof treeFolders[number], depth: number) {
     const folderRequests = filteredRequests.filter((r) => r.folderId === folder.id);
-    const children = folders.filter(item => item.desktopParent === folder.id);
+    const children = treeFolders.filter(item => item.desktopParent === folder.id);
+    const isOnline = 'online' in folder;
     const isCollapsed = collapsedIds.has(folder.id) && !search.trim();
 
     if (search.trim() && !visibleIds.has(folder.id)) {
@@ -135,14 +141,15 @@ export function Sidebar({
             aria-expanded={!isCollapsed} className="shrink-0 text-ui-muted hover:text-ui-ink">
             {isCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
-          <button type="button" onClick={() => onOpenFolder(folder.id)}
-            title={`Edit variables for ${folder.name}`}
+          <button type="button" onClick={() => isOnline ? toggleFolder(folder.id) : onOpenFolder(folder.id)}
+            title={isOnline ? `Shared online${folder.sharedBy ? ` by ${folder.sharedBy}` : ''}` : `Edit variables for ${folder.name}`}
             className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-[12px] font-medium text-ui-ink">
             {isCollapsed ? <Folder className="w-3.5 h-3.5 shrink-0 text-ui-secondary" />
               : <FolderOpen className="w-3.5 h-3.5 shrink-0 text-ui-secondary" />}
             <span className="truncate">{folder.name}</span>
+            {isOnline && <span className="shrink-0 text-[10px] text-ui-green">Online</span>}
           </button>
-          <button
+          {!isOnline && <button
             type="button"
             aria-label={`Sharing for ${folder.name}`}
             aria-pressed={Boolean(folder.lanShared) || lockedFolderIds.has(folder.id)}
@@ -154,11 +161,11 @@ export function Sidebar({
             }`}
           >
             <Network className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
+          </button>}
           <span className="font-mono text-[10px] text-ui-muted tabular-nums group-hover:hidden">
             {folderRequests.length}
           </span>
-          <div
+          {!isOnline && <div
             className="hidden group-hover:flex group-focus-within:flex items-center gap-0.5 shrink-0"
             onClick={(e) => e.stopPropagation()}
           >
@@ -192,7 +199,7 @@ export function Sidebar({
                 <Trash2 className="w-3 h-3" />
               </button>
             )}
-          </div>
+          </div>}
         </div>
 
         {/* Request Rows */}
@@ -206,15 +213,12 @@ export function Sidebar({
             ) : (
               folderRequests.map((req) => {
                 const isActive = req.id === activeRequestId;
+                const method = req.method.toUpperCase() as HttpMethod;
                 const isDirty = dirtyRequestIds.has(req.id);
                 return (
                   <div
                     key={req.id}
                     style={{ paddingLeft: 24 + Math.min(depth, 9) * 12 }}
-                    onClick={() => {
-                      onSelectRequest(req.id);
-                      if (isOverlay && onCloseOverlay) onCloseOverlay();
-                    }}
                     className={`group relative flex items-center gap-2 h-[28px] pl-6 pr-2 cursor-pointer transition-colors ${
                       isActive
                         ? 'bg-ui-elevated text-ui-ink'
@@ -227,15 +231,24 @@ export function Sidebar({
                         className="absolute left-0 top-0 bottom-0 w-[2px] bg-ui-accent"
                       />
                     )}
-                    <MethodBadge method={req.method} compact />
-                    <span className="text-[12px] truncate flex-1">{req.name}</span>
+                    <button type="button" title={isOnline ? 'Open shared request' : undefined}
+                      className="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left"
+                      onClick={() => {
+                        if (isOnline) onOpenOnlineRequest(req.id);
+                        else onSelectRequest(req.id);
+                        if (isOverlay && onCloseOverlay) onCloseOverlay();
+                      }}>
+                      {Object.hasOwn(METHOD_STYLES, method) ? <MethodBadge method={method} compact />
+                        : <span className="font-mono text-[10px]">{req.method}</span>}
+                      <span className="text-[12px] truncate flex-1">{req.name}</span>
+                    </button>
                     {isDirty && (
                       <span
                         title="Unsaved changes"
                         className="w-1.5 h-1.5 rounded-full bg-ui-accent shrink-0 group-hover:hidden"
                       />
                     )}
-                    <div
+                    {!isOnline && <div
                       className="hidden group-hover:flex items-center gap-0.5 shrink-0"
                       onClick={(e) => e.stopPropagation()}
                     >
@@ -255,7 +268,7 @@ export function Sidebar({
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
-                    </div>
+                    </div>}
                   </div>
                 );
               })
@@ -371,9 +384,8 @@ export function Sidebar({
 
       {/* Collection Tree */}
       <div className="flex-1 overflow-y-auto py-1.5">
-        {folders.filter(folder => !folder.desktopParent || !byId.has(folder.desktopParent)).map(folder => renderFolder(folder, 0))}
+        {treeFolders.filter(folder => !folder.desktopParent || !byId.has(folder.desktopParent)).map(folder => renderFolder(folder, 0))}
         {sharedSnapshot && !search.trim() && <SharedWorkspace snapshot={sharedSnapshot} compact />}
-        {onlineSnapshot && !search.trim() && <SharedWorkspace snapshot={onlineSnapshot} compact source="Online" />}
 
         {filteredRequests.length === 0 && search.trim() && (
           <div className="px-3 py-8 text-center">

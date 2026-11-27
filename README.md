@@ -170,9 +170,18 @@ privat dan port yang ditampilkan.
 2. Buka **Online Sharing**, hubungkan Google Drive, lalu pilih **Share collections**.
    Masukkan email Google penerima dan klik **Send invitation**. PostDove menyimpan
    seluruh daftar yang aktif sebagai satu snapshot JSON per penerima di
-   `My Drive/PostDove`, memberi izin Viewer, lalu mengirim undangan di PostDove.
+   `My Drive/PostDove`, memberi izin Editor, lalu mengirim undangan di PostDove.
 3. Penerima membuka **Online Sharing > Invitations** dan memilih **Accept**.
-   Koleksi muncul di sidebar dengan tanda **Online** dan akses baca saja.
+   Jika Drive meminta izin file, pilih **Allow access to this file** dan
+   konfirmasi file undangan di Google Picker dengan akun penerima.
+   Koleksi muncul di sidebar dengan tanda **Online**. Buka request dan pilih
+   **Save** untuk memperbarui request di snapshot Google Drive. Perubahan pada
+   body, autentikasi, header, parameter, dan assertion meminta konfirmasi
+   sebelum disimpan karena nilainya dapat dibaca oleh pengguna yang memiliki
+   akses ke file bersama. Untuk pairing lama, pengirim dapat memberikan izin Editor
+   lewat **Update collections**. Saat Google Drive pengirim tersambung,
+   PostDove memeriksa perubahan dari penerima secara berkala dan menerapkannya
+   ke request asli. Draft pengirim ditunda sampai selesai diedit.
 4. Gunakan **Online pairings > Update collections** untuk memperbarui daftar
    yang dibagikan kepada penerima. Koleksi yang sudah dibagikan tetap terkunci
    selama ada pairing yang menyertakannya. Pilih **Disconnect**, lalu konfirmasi,
@@ -180,7 +189,8 @@ privat dan port yang ditampilkan.
    terputus, koleksi bisa dimatikan dari sidebar.
 
 Firebase menyimpan identitas pengirim, penerima, dan link undangan. Snapshot
-berisi metadata yang sama dengan LAN Sharing dan disimpan di Google Drive.
+awal berisi metadata yang sama dengan LAN Sharing. Edit online yang dikonfirmasi
+ditambahkan ke snapshot di Google Drive.
 Penerima dapat membukanya saat komputer pengirim mati. Salinan yang sudah
 diunduh tetap ada pada penerima.
 

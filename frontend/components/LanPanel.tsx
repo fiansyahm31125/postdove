@@ -1,3 +1,4 @@
+import type { ApiRequest } from '../types/api';
 import type { OperationResult } from './OperationResultDialog';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
@@ -16,11 +17,14 @@ interface Offer {
   fingerprint: string;
   expiresInSeconds: number;
 }
+export type OnlineRequestConfig = Partial<Pick<ApiRequest, 'headers' | 'params' | 'auth'
+  | 'bodyMode' | 'bodyContent' | 'formBody' | 'assertions'>>;
+
 export interface SharedSnapshot {
   folders: { id: string; name: string; desktopParent?: string | null; sharedBy?: string }[];
   requests: {
     id: string; folderId: string; name: string; method: string; url: string;
-    headers: string[]; parameters: string[];
+    headers: string[]; parameters: string[]; onlineConfig?: OnlineRequestConfig;
   }[];
 }
 

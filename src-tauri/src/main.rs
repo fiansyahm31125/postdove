@@ -232,10 +232,10 @@ fn main() {
         save_workspace, send_request, import_collection, export_collection, collection_json,
         lan::lan_status, lan::lan_host_start, lan::lan_host_stop, lan::lan_revoke,
         lan::lan_invite_info, lan::lan_pair, lan::lan_read, lan::lan_forget,
-        drive::drive_pairings, drive::drive_share_enabled, drive::drive_disconnect_pairing, drive::drive_read,
+        drive::drive_pairings, drive::drive_outgoing_edits, drive::drive_share_enabled, drive::drive_disconnect_pairing, drive::drive_read, drive::drive_save_request,
         drive::drive_pick, drive::drive_picker_configured, drive::drive_import,
         drive::drive_open_in_browser, online::google_drive_connected, online::google_login,
-        online::google_profile, online::google_logout, firebase::firebase_invitations,
+        online::google_profile, online::drive_authorize_invitation, online::google_logout, firebase::firebase_invitations,
         firebase::firebase_accept, firebase::firebase_dismiss
     ];
     tauri::Builder::default()

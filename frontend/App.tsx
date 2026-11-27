@@ -2,7 +2,7 @@ import { isWriteMethod, OperationResultDialog, type OperationResult } from './co
 import { CollectionVariablesDialog } from './components/CollectionVariablesDialog';
 import { VariableEditor, VariableValue } from './components/VariableEditor';
 import { invoke } from '@tauri-apps/api/core';
-import { LanPanel, type LanStatus, type SharedSnapshot } from './components/LanPanel';
+import { LanPanel, type LanStatus, type OnlineRequestConfig, type SharedSnapshot } from './components/LanPanel';
 import { OnlinePanel, type InvitationSnapshot, type OnlineInvitation, type OnlinePairing } from './components/OnlinePanel';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -37,6 +37,7 @@ import type {
   EnvironmentVariable,
   HistoryEntry,
   HttpMethod,
+  KeyValueItem,
   SplitOrientation,
 } from './types/api';
 import {
@@ -45,6 +46,7 @@ import {
   INITIAL_REQUESTS,
 } from './data/seedData';
 import {
+  buildUrlWithParams,
   evaluateAssertions,
   environmentForRequest,
   extractTemplateVariables,
@@ -75,6 +77,18 @@ type VariableEdit = {
 
 function enabledVariable(variables: EnvironmentVariable[] | undefined, name: string) {
   return variables?.findLast(variable => variable.enabled && variable.key.trim() === name);
+}
+
+function onlineRequestConfig(source: SharedSnapshot['requests'][number]): Required<OnlineRequestConfig> {
+  const makeRows = (keys: string[]) => keys.map((key, index) => ({
+    id: `${source.id}/${index}`, key, value: '', description: '', enabled: false,
+  }));
+  return {
+    params: makeRows(source.parameters), headers: makeRows(source.headers),
+    auth: { type: 'none', bearerToken: '', apiKeyName: '', apiKeyValue: '', apiKeyIn: 'header', basicUsername: '', basicPassword: '' },
+    bodyMode: 'none', bodyContent: '', formBody: [], assertions: [],
+    ...source.onlineConfig,
+  };
 }
 
 export default function App({ initial, onLogout }: { initial: StudioWorkspace; onLogout: () => void }) {
@@ -315,6 +329,80 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
     enqueueSave(state, changes);
   }, [folders, requests, environments, activeEnvId, history, appearance, enqueueSave]);
 
+  const draftsForSync = useRef(drafts);
+  useEffect(() => { draftsForSync.current = drafts; }, [drafts]);
+  const outgoingPairingCount = pairings.length;
+  useEffect(() => {
+    if (!driveConnected || !outgoingPairingCount) return;
+    let active = true;
+    let timer: number;
+    type OutgoingEdit = {
+      request: SharedSnapshot['requests'][number];
+      fields: string[];
+      revision: string;
+    };
+    const mergeRows = (rows: KeyValueItem[], keys: string[], ignoreCase = false) => {
+      const canonical = (key: string) => ignoreCase ? key.toLowerCase() : key;
+      const used = new Set<string>();
+      const next = keys.map(key => {
+        const match = rows.find(row => !used.has(row.id) && canonical(row.key) === canonical(key));
+        if (match) {
+          used.add(match.id);
+          return { ...match, key };
+        }
+        return { id: uid('row'), key, value: '', description: '', enabled: false };
+      });
+      return [...next, ...rows.filter(row => !row.enabled && !used.has(row.id))];
+    };
+    async function sync() {
+      try {
+        if (document.hidden) return;
+        const edits = await invoke<OutgoingEdit[]>('drive_outgoing_edits');
+        if (!active || !edits.length) return;
+        const latest = new Map<string, OutgoingEdit>();
+        for (const edit of edits) {
+          const previous = latest.get(edit.request.id);
+          if (!previous || previous.revision < edit.revision) latest.set(edit.request.id, edit);
+        }
+        setRequests(current => {
+          let changed = false;
+          const next = current.map(request => {
+            const edit = latest.get(request.id);
+            if (!edit || request.folderId !== edit.request.folderId || draftsForSync.current[request.id]
+                || (request.appliedOnlineRevision ?? '') >= edit.revision) return request;
+            const remote = edit.request;
+            const method = remote.method.toUpperCase() as HttpMethod;
+            const fields = new Set(edit.fields);
+            const headers = remote.onlineConfig?.headers ?? (fields.has('headers') ? mergeRows(request.headers, remote.headers, true) : request.headers);
+            const params = remote.onlineConfig?.params ?? (fields.has('parameters') ? mergeRows(request.params, remote.parameters) : request.params);
+            let url = request.url;
+            if (fields.has('url') && remote.url !== request.url.split(/[?#]/, 1)[0]) {
+              url = remote.url + request.url.slice(request.url.split(/[?#]/, 1)[0].length);
+            }
+            if (remote.onlineConfig?.params || (fields.has('parameters') && params !== request.params)) {
+              url = buildUrlWithParams(url, params);
+            }
+            changed = true;
+            return {
+              ...request, ...remote.onlineConfig, headers, params, url,
+              name: fields.has('name') ? remote.name : request.name,
+              method: fields.has('method') && Object.hasOwn(METHOD_STYLES, method) ? method : request.method,
+              appliedOnlineRevision: edit.revision,
+              updatedAt: new Date().toISOString(),
+            };
+          });
+          return changed ? next : current;
+        });
+      } catch {
+        // The next poll retries a temporary Drive error.
+      } finally {
+        if (active) timer = window.setTimeout(sync, 15_000);
+      }
+    }
+    void sync();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [driveConnected, outgoingPairingCount]);
+
   const importCollection = async () => {
     try {
       const imported = await importDesktopCollection();
@@ -358,11 +446,28 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
     [environments, activeEnvId]
   );
 
+  const onlineRequests = useMemo(() => {
+    const entries = new Map<string, ApiRequest>();
+    for (const source of onlineSnapshot?.requests ?? []) {
+      const method = source.method.toUpperCase() as HttpMethod;
+      if (!Object.hasOwn(METHOD_STYLES, method)) continue;
+      const config = onlineRequestConfig(source);
+      entries.set(source.id, {
+        id: source.id, folderId: source.folderId, name: source.name, method,
+        url: source.onlineConfig?.params ? buildUrlWithParams(source.url, config.params) : source.url,
+        ...config, updatedAt: '',
+      });
+    }
+    return entries;
+  }, [onlineSnapshot]);
+  const onlineEditBase = useRef(new Map<string, SharedSnapshot['requests'][number]>());
+  const onlineSaveInFlight = useRef(new Set<string>());
+
   const activeRequest = useMemo(() => {
     if (!activeRequestId) return null;
     if (drafts[activeRequestId]) return drafts[activeRequestId];
-    return requests.find((r) => r.id === activeRequestId) || null;
-  }, [activeRequestId, drafts, requests]);
+    return requests.find((r) => r.id === activeRequestId) ?? onlineRequests.get(activeRequestId) ?? null;
+  }, [activeRequestId, drafts, requests, onlineRequests]);
 
   const dirtyRequestIds = useMemo(() => new Set(Object.keys(drafts)), [drafts]);
   const displayedEnv = activeScreen === 'workbench' && activeRequest
@@ -370,8 +475,8 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
     : activeEnv;
 
   const activeFolder = useMemo(
-    () => folders.find((f) => f.id === activeRequest?.folderId) || null,
-    [folders, activeRequest]
+    () => folders.find((f) => f.id === activeRequest?.folderId) ?? onlineSnapshot?.folders.find(f => f.id === activeRequest?.folderId) ?? null,
+    [folders, activeRequest, onlineSnapshot]
   );
 
   const folderById = useMemo(() => new Map(folders.map(folder => [folder.id, folder])), [folders]);
@@ -456,6 +561,14 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
   const handleCloseTab = useCallback(
     (id: string, e?: React.MouseEvent) => {
       if (e) e.stopPropagation();
+      if (onlineEditBase.current.has(id) && !onlineSaveInFlight.current.has(id)) {
+        onlineEditBase.current.delete(id);
+        setDrafts(current => {
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
+      }
       setOpenTabIds((prev) => {
         const next = prev.filter((t) => t !== id);
         if (activeRequestId === id) {
@@ -470,13 +583,72 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
   );
 
   const handleDraftChange = useCallback((updated: ApiRequest) => {
+    const source = onlineSnapshot?.requests.find(request => request.id === updated.id);
+    if (source && !onlineEditBase.current.has(updated.id)) onlineEditBase.current.set(updated.id, source);
     setDrafts((prev) => ({ ...prev, [updated.id]: updated }));
-  }, []);
+  }, [onlineSnapshot]);
 
   const handleSaveRequest = useCallback(() => {
     if (!activeRequestId) return;
     const draft = drafts[activeRequestId];
     if (!draft) return;
+    const expected = onlineEditBase.current.get(activeRequestId);
+    if (expected) {
+      const invitation = invitations.find(item => item.accepted && activeRequestId.startsWith(`${item.id}/`));
+      const action = 'Save online request';
+      if (!invitation) {
+        reportResult({ action, ok: false, detail: 'Open the request from an accepted online invitation to save it to Drive.' });
+        return;
+      }
+      const base = onlineRequestConfig({ ...expected, id: activeRequestId });
+      const config: OnlineRequestConfig = {};
+      for (const field of ['headers', 'params', 'auth', 'bodyMode', 'bodyContent', 'formBody', 'assertions'] as const) {
+        if (JSON.stringify(draft[field]) !== JSON.stringify(base[field])) {
+          Object.assign(config, { [field]: draft[field] });
+        }
+      }
+      const saveOnline = () => {
+        if (onlineSaveInFlight.current.has(activeRequestId)) return;
+        onlineSaveInFlight.current.add(activeRequestId);
+        void invoke<SharedSnapshot>('drive_save_request', {
+          link: invitation.link,
+          requestId: activeRequestId.slice(invitation.id.length + 1),
+          expected,
+          draft: {
+            name: draft.name, method: draft.method, url: draft.url, onlineConfig: config,
+            headers: draft.headers.map(({ key }) => ({ key, enabled: true })),
+            params: draft.params.map(({ key }) => ({ key, enabled: true })),
+          },
+        }).then(snapshot => {
+          setInvitationSnapshots(current => current[invitation.id]
+            ? { ...current, [invitation.id]: { status: 'ready', snapshot } }
+            : current);
+          onlineEditBase.current.delete(activeRequestId);
+          const saved = snapshot.requests.find(item => `${invitation.id}/${item.id}` === activeRequestId);
+          setDrafts(current => {
+            if (current[activeRequestId] !== draft) {
+              if (saved && current[activeRequestId]) onlineEditBase.current.set(activeRequestId, saved);
+              return current;
+            }
+            const next = { ...current };
+            delete next[activeRequestId];
+            return next;
+          });
+          reportResult({ action, ok: true, detail: 'Updated the shared request on Google Drive.' });
+        }).catch(error => reportResult({ action, ok: false, detail: String(error) }))
+          .finally(() => { onlineSaveInFlight.current.delete(activeRequestId); });
+      };
+      if (Object.keys(config).length) {
+        reportResult({
+          action, ok: false,
+          detail: 'Anyone with access to this shared collection can read the changed request values, including any credentials you entered.',
+          confirmation: { label: 'Save to Google Drive', run: saveOnline },
+        });
+      } else {
+        saveOnline();
+      }
+      return;
+    }
     markChange("Save request");
     const stamped = { ...draft, updatedAt: new Date().toISOString() };
     setRequests((prev) => prev.map((r) => (r.id === activeRequestId ? stamped : r)));
@@ -485,7 +657,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
       delete next[activeRequestId];
       return next;
     });
-  }, [activeRequestId, drafts, markChange]);
+  }, [activeRequestId, drafts, invitations, markChange, reportResult]);
 
   const handleCreateRequest = useCallback(
     (folderId: string) => {
@@ -541,6 +713,14 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
     [folders, markChange]
   );
 
+  function openOnlineRequest(sourceId: string) {
+    if (!onlineRequests.has(sourceId)) {
+      reportResult({ action: 'Open shared request', ok: false, detail: 'This HTTP method is not supported in Workbench.' });
+      return;
+    }
+    handleSelectRequest(sourceId);
+  }
+
   const handleDuplicateRequest = useCallback(
     (id: string) => {
       const source = drafts[id] || requests.find((r) => r.id === id);
@@ -548,6 +728,8 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
       const copy: ApiRequest = {
         ...JSON.parse(JSON.stringify(source)),
         id: uid('req'),
+        onlineCopyOf: undefined,
+        appliedOnlineRevision: undefined,
         name: `${source.name} (Copy)`,
         updatedAt: new Date().toISOString(),
       };
@@ -1090,6 +1272,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
                   lanSharing={Boolean(lanSharing)}
                   sharedSnapshot={viewerAddress ? sharedSnapshot : undefined}
                   onlineSnapshot={onlineSnapshot}
+                  onOpenOnlineRequest={openOnlineRequest}
                   onOpenImportCurl={() => setImportCurlOpen(true)}
                   onImportPostman={importCollection}
                   onExportPostman={exportCollection}
@@ -1132,6 +1315,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
                     lanSharing={Boolean(lanSharing)}
                     sharedSnapshot={viewerAddress ? sharedSnapshot : undefined}
                     onlineSnapshot={onlineSnapshot}
+                  onOpenOnlineRequest={openOnlineRequest}
                     onOpenFolder={id => {
                       setMobileDrawerOpen(false);
                       setCollectionEdit(collectionRoot(id));
@@ -1154,7 +1338,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
               <div className="h-[34px] bg-ui-surface border-b border-ui-border flex items-center justify-between pr-2 shrink-0">
                 <div className="flex items-end h-full overflow-x-auto min-w-0">
                   {openTabIds.map((tabId) => {
-                    const req = drafts[tabId] || requests.find((r) => r.id === tabId);
+                    const req = drafts[tabId] ?? requests.find((r) => r.id === tabId) ?? onlineRequests.get(tabId);
                     if (!req) return null;
                     const isActive = tabId === activeRequestId;
                     const isDirty = dirtyRequestIds.has(tabId);
