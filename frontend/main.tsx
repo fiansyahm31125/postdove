@@ -17,12 +17,16 @@ function Desktop() {
   const [initial, setInitial] = useState<StudioWorkspace>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [signedIn, setSignedIn] = useState(false);
 
   async function signIn() {
     setBusy(true);
     setError('');
     try {
-      await invoke('google_login', { drive: false });
+      if (!signedIn) {
+        await invoke('google_login', { drive: true });
+        setSignedIn(true);
+      }
       setInitial(await loadDesktopWorkspace());
     } catch (error) {
       setError(String(error));
@@ -42,6 +46,7 @@ function Desktop() {
 
   if (initial) return <App initial={initial} onLogout={() => {
     setInitial(undefined);
+    setSignedIn(false);
     document.documentElement.dataset.mode = 'dark';
     document.documentElement.dataset.style = 'minimalism';
   }} />;
@@ -50,10 +55,10 @@ function Desktop() {
     <main className="grid h-full place-items-center bg-ui-canvas p-5 text-ui-ink">
       <section className="w-full max-w-sm rounded-lg border border-ui-border bg-ui-surface p-6" aria-labelledby="sign-in-title">
         <h1 id="sign-in-title" className="text-xl font-semibold">Sign in to PostDove</h1>
-        <p className="mt-2 text-ui-secondary">Use your Google account to open your workspace and receive collection invitations.</p>
+        <p className="mt-2 text-ui-secondary">Sign in and connect Google Drive to open your private workspace.</p>
         <button type="button" disabled={busy} onClick={() => void signIn()}
           className="mt-5 cursor-pointer rounded border border-ui-border bg-ui-elevated px-4 py-2 hover:bg-ui-hover disabled:opacity-50">
-          Sign in with Google
+          {signedIn ? 'Retry opening workspace' : 'Sign in with Google'}
         </button>
         {busy && <p className="mt-3 text-ui-secondary" role="status">Continue in your browser…</p>}
         {error && <p className="mt-3 break-words text-ui-error-text" role="alert">{error}</p>}

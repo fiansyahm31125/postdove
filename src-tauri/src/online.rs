@@ -224,7 +224,9 @@ pub async fn google_logout(
         .signing_in
         .try_lock()
         .map_err(|_| "Wait for the current sign-in to finish.")?;
-    crate::lan::lan_host_stop(app.state::<std::sync::Arc<crate::lan::Lan>>()).await?;
+    let lan = app.state::<std::sync::Arc<crate::lan::Lan>>();
+    lan.set_workspace(&json!({}))?;
+    crate::lan::lan_host_stop(lan).await?;
     *login.drive.lock().await = None;
     *login.profile.lock().await = None;
     firebase.clear().await;
@@ -493,13 +495,14 @@ pub async fn google_login(
                 .into(),
         );
     }
+    let reconnecting = needs_drive && login.profile.lock().await.is_some();
     firebase
         .authenticate(
             token["id_token"]
                 .as_str()
                 .ok_or("Google did not return an identity token.")?,
             &profile.email,
-            needs_drive,
+            reconnecting,
         )
         .await?;
     *login.profile.lock().await = Some(profile.clone());

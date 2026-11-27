@@ -14,7 +14,7 @@ use std::{
     collections::BTreeMap,
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
@@ -167,7 +167,7 @@ struct Host {
 
 pub struct Lan {
     directory: PathBuf,
-    workspace: PathBuf,
+    workspace: RwLock<Value>,
     identity: Identity,
     host: Mutex<Host>,
     viewer: Mutex<Option<Viewer>>,
@@ -189,7 +189,7 @@ enum Reply {
 }
 
 impl Lan {
-    pub fn load(directory: PathBuf, workspace: PathBuf) -> Result<Arc<Self>, String> {
+    pub fn load(directory: PathBuf) -> Result<Arc<Self>, String> {
         let identity_file = directory.join("identity.json");
         let identity = match read_json(&identity_file)? {
             Some(identity) => identity,
@@ -203,7 +203,7 @@ impl Lan {
         let viewer = read_json::<Option<Viewer>>(&directory.join("viewer.json"))?.flatten();
         Ok(Arc::new(Self {
             directory,
-            workspace,
+            workspace: RwLock::new(json!({"folders":[],"requests":[]})),
             identity,
             host: Mutex::new(Host {
                 peers,
@@ -369,9 +369,20 @@ impl Lan {
         }
     }
 
+    pub fn set_workspace(&self, workspace: &Value) -> Result<(), String> {
+        *self
+            .workspace
+            .write()
+            .map_err(|_| "Could not update the LAN workspace.")? =
+            public_snapshot(workspace, |folder| folder["lanShared"] == true);
+        Ok(())
+    }
+
     fn snapshot(&self) -> Result<Value, String> {
-        let workspace: Value = read_json(&self.workspace)?.unwrap_or_else(|| json!({}));
-        Ok(public_snapshot(&workspace, |folder| folder["lanShared"] == true))
+        self.workspace
+            .read()
+            .map(|snapshot| snapshot.clone())
+            .map_err(|_| "Could not read the LAN workspace.".into())
     }
 
     async fn request(&self, invite: &Invite, message: &Message) -> Result<Reply, String> {
@@ -431,10 +442,15 @@ pub(crate) fn public_snapshot(workspace: &Value, shared: impl Fn(&Value) -> bool
         .iter()
         .filter_map(|folder| folder["id"].as_str())
         .collect();
-    let folders: Vec<_> = published.iter().map(|folder| {
-        let parent = folder["desktopParent"].as_str().filter(|id| ids.contains(id));
-        json!({"id": folder["id"], "name": folder["name"], "desktopParent": parent})
-    }).collect();
+    let folders: Vec<_> = published
+        .iter()
+        .map(|folder| {
+            let parent = folder["desktopParent"]
+                .as_str()
+                .filter(|id| ids.contains(id));
+            json!({"id": folder["id"], "name": folder["name"], "desktopParent": parent})
+        })
+        .collect();
     let requests: Vec<_> = workspace["requests"].as_array().into_iter().flatten()
         .filter(|request| request["id"].is_string() && request["name"].is_string()
             && request["method"].is_string()
@@ -704,8 +720,8 @@ mod tests {
     #[tokio::test]
     async fn lan_pairing_requires_the_pin_and_binds_read_access_to_the_viewer_certificate() {
         let directory = tempfile::tempdir().unwrap();
-        let workspace = directory.path().join("studio-workspace.json");
-        crate::write_json(&workspace, &json!({
+        let host = Lan::load(directory.path().join("host")).unwrap();
+        host.set_workspace(&json!({
             "folders": [
                 {"id":"demo","name":"Demo","desktopParent":"private-parent","lanShared":true},
                 {"id":"private-parent","name":"Private parent"},
@@ -718,9 +734,8 @@ mod tests {
                 {"id":"private-request","folderId":"private-child","name":"Private request","url":"https://example.com/private"}],
             "environments": [{"name":"private","variables":[{"currentValue":"secret"}]}]
         })).unwrap();
-        let host = Lan::load(directory.path().join("host"), workspace.clone()).unwrap();
-        let viewer = Lan::load(directory.path().join("viewer"), PathBuf::new()).unwrap();
-        let other = Lan::load(directory.path().join("other"), PathBuf::new()).unwrap();
+        let viewer = Lan::load(directory.path().join("viewer")).unwrap();
+        let other = Lan::load(directory.path().join("other")).unwrap();
         let offer = host.start("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let invite = decode_invite(&offer.invitation).unwrap();
 
@@ -808,7 +823,10 @@ mod tests {
             panic!("viewer did not receive a snapshot")
         };
         assert_eq!(snapshot["requests"][0]["url"], "https://example.com/health");
-        assert_eq!(snapshot["folders"], json!([{"id":"demo","name":"Demo","desktopParent":null}]));
+        assert_eq!(
+            snapshot["folders"],
+            json!([{"id":"demo","name":"Demo","desktopParent":null}])
+        );
         assert_eq!(snapshot["requests"].as_array().unwrap().len(), 1);
         assert_eq!(snapshot["requests"][0]["headers"], json!(["Authorization"]));
         assert_eq!(snapshot["requests"][0]["parameters"], json!(["token"]));
@@ -829,15 +847,12 @@ mod tests {
             .is_err()
         );
 
-        crate::write_json(
-            &workspace,
-            &json!({
-                "folders":[{"id":"demo","name":"Demo","lanShared":false},
-                    {"id":"new","name":"Newly shared","lanShared":true}],
-                "requests":[{"id":"r","folderId":"demo","name":"Health"},
-                    {"id":"r2","folderId":"new","name":"Status","method":"GET"}]
-            }),
-        )
+        host.set_workspace(&json!({
+            "folders":[{"id":"demo","name":"Demo","lanShared":false},
+                {"id":"new","name":"Newly shared","lanShared":true}],
+            "requests":[{"id":"r","folderId":"demo","name":"Health"},
+                {"id":"r2","folderId":"new","name":"Status","method":"GET"}]
+        }))
         .unwrap();
         let Reply::Workspace { workspace } = viewer
             .request(
@@ -856,7 +871,8 @@ mod tests {
         assert_eq!(workspace["requests"].as_array().unwrap().len(), 1);
         assert_eq!(workspace["requests"][0]["name"], "Status");
 
-        let reloaded = Lan::load(directory.path().join("host"), host.workspace.clone()).unwrap();
+        let reloaded = Lan::load(directory.path().join("host")).unwrap();
+        assert_eq!(reloaded.snapshot().unwrap()["folders"], json!([]));
         let restarted = reloaded.host.lock().await;
         assert!(
             restarted

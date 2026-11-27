@@ -171,28 +171,223 @@ async fn publish_pairing(
             (Method::POST, UPLOAD.to_owned())
         }
     };
+    upload_json(http, token, method, &endpoint, &metadata, &content, None).await
+}
+
+async fn upload_json(
+    http: &Client,
+    token: &str,
+    method: Method,
+    endpoint: &str,
+    metadata: &Value,
+    content: &[u8],
+    etag: Option<reqwest::header::HeaderValue>,
+) -> Result<String, String> {
     let mut entropy = [0u8; 16];
     getrandom::fill(&mut entropy).map_err(|_| "Could not prepare the upload.")?;
     let boundary = format!("postdove_{:x}", u128::from_be_bytes(entropy));
     let mut body = format!("--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n--{boundary}\r\nContent-Type: application/json\r\n\r\n").into_bytes();
-    body.extend_from_slice(&content);
+    body.extend_from_slice(content);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    let response = http
+    let upload = http
         .request(method, endpoint)
         .bearer_auth(token)
         .query(&[("uploadType", "multipart"), ("fields", "id")])
         .header(
             "Content-Type",
             format!("multipart/related; boundary={boundary}"),
-        )
+        );
+    let upload = if let Some(etag) = etag {
+        upload.header(reqwest::header::IF_MATCH, etag)
+    } else {
+        upload
+    };
+    let response = upload
         .body(body)
         .send()
         .await
-        .map_err(|_| "Could not publish the folder to Google Drive.")?;
+        .map_err(|_| "Could not save the file to Google Drive.")?;
+    if response.status() == StatusCode::PRECONDITION_FAILED {
+        return Err("This Drive file changed in another window or computer. Reopen the workspace before saving.".into());
+    }
     file_id(&read_json::<File>(response, 32_000).await?.id)
 }
 
-#[derive(Deserialize, Serialize)]
+const WORKSPACE_LIMIT: usize = 24 * 1024 * 1024;
+
+struct PrivateDriveFile {
+    id: String,
+    etag: Option<reqwest::header::HeaderValue>,
+    digest: String,
+    data: Value,
+}
+
+async fn private_file(
+    http: &Client,
+    token: &str,
+    tag: &str,
+) -> Result<Option<PrivateDriveFile>, String> {
+    let query = format!(
+        "trashed = false and 'root' in parents and 'me' in owners and appProperties has {{ key='postdovePrivate' and value='{tag}' }}"
+    );
+    let Some(file) = find_file(http, token, &query).await? else {
+        return Ok(None);
+    };
+    let id = file_id(&file.id)?;
+    let metadata = http
+        .get(format!("{FILES}/{id}"))
+        .bearer_auth(token)
+        .query(&[("fields", "ownedByMe,shared")])
+        .send()
+        .await
+        .map_err(|_| "Could not check private Drive file access.")?;
+    let metadata: Value = read_json(metadata, 32_000).await?;
+    if metadata["ownedByMe"] != true || metadata["shared"] != false {
+        return Err("A private PostDove file is shared. Remove its sharing permissions in Google Drive to continue.".into());
+    }
+    let response = http
+        .get(format!("{FILES}/{id}"))
+        .bearer_auth(token)
+        .query(&[("alt", "media")])
+        .send()
+        .await
+        .map_err(|_| "Could not read the workspace from Google Drive.")?;
+    let etag = response.headers().get(reqwest::header::ETAG).cloned();
+    let bytes = read_body(response, WORKSPACE_LIMIT).await?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let data = serde_json::from_slice(&bytes)
+        .map_err(|_| "The PostDove file in Drive contains invalid JSON.")?;
+    Ok(Some(PrivateDriveFile {
+        id,
+        etag,
+        digest,
+        data,
+    }))
+}
+
+async fn save_private_file(
+    http: &Client,
+    token: &str,
+    tag: &str,
+    name: &str,
+    file: Option<PrivateDriveFile>,
+    data: &Value,
+) -> Result<(String, String), String> {
+    let content = serde_json::to_vec(data).map_err(|_| "Could not encode the Drive file.")?;
+    if content.len() > WORKSPACE_LIMIT {
+        return Err("The workspace exceeds the 24 MiB Google Drive limit in PostDove.".into());
+    }
+    let digest = format!("{:x}", Sha256::digest(&content));
+    let metadata =
+        json!({"name":name, "mimeType":"application/json","appProperties":{"postdovePrivate":tag}});
+    let (method, endpoint, etag) = match file {
+        Some(file) => (Method::PATCH, format!("{UPLOAD}/{}", file.id), file.etag),
+        None => (Method::POST, UPLOAD.to_owned(), None),
+    };
+    let id = upload_json(http, token, method, &endpoint, &metadata, &content, etag).await?;
+    Ok((id, digest))
+}
+
+#[derive(Default)]
+pub struct CloudWorkspace(Mutex<Option<WorkspaceSession>>);
+
+struct WorkspaceSession {
+    account: String,
+    nonce: String,
+    baseline: Option<(String, String)>,
+}
+
+#[tauri::command]
+pub async fn drive_load_workspace(
+    cloud: State<'_, CloudWorkspace>,
+    login: State<'_, GoogleLogin>,
+    firebase: State<'_, crate::firebase::Firebase>,
+    lan: State<'_, std::sync::Arc<crate::lan::Lan>>,
+) -> Result<Value, String> {
+    let mut current = cloud.0.lock().await;
+    let (account, _) = firebase.account().await?;
+    let token = login.drive_token().await?;
+    let file = private_file(&client()?, &token, "workspace-v1").await?;
+    let nonce = random_token()?;
+    let (workspace, baseline) = if let Some(file) = file {
+        let workspace = &file.data["workspace"];
+        if file.data["format"] != "postdove-workspace-v1"
+            || !workspace["folders"].is_array()
+            || !workspace["requests"].is_array()
+            || !workspace["environments"].is_array()
+            || !workspace["history"].is_array()
+        {
+            return Err(
+                "The saved PostDove workspace in Google Drive has an unsupported format.".into(),
+            );
+        }
+        lan.set_workspace(workspace)?;
+        (Some(workspace.clone()), Some((file.id, file.digest)))
+    } else {
+        lan.set_workspace(&json!({}))?;
+        (None, None)
+    };
+    *current = Some(WorkspaceSession {
+        account,
+        nonce: nonce.clone(),
+        baseline,
+    });
+    Ok(json!({"workspace": workspace, "session": nonce}))
+}
+
+#[tauri::command]
+pub async fn drive_save_workspace(
+    cloud: State<'_, CloudWorkspace>,
+    login: State<'_, GoogleLogin>,
+    firebase: State<'_, crate::firebase::Firebase>,
+    lan: State<'_, std::sync::Arc<crate::lan::Lan>>,
+    workspace: Value,
+    session: String,
+) -> Result<(), String> {
+    let mut current = cloud.0.lock().await;
+    let (uid, _) = firebase.account().await?;
+    let active = current
+        .as_mut()
+        .filter(|active| active.account == uid && active.nonce == session)
+        .ok_or("This window is not connected to the current account's Drive workspace.")?;
+    let token = login.drive_token().await?;
+    let http = client()?;
+    let file = private_file(&http, &token, "workspace-v1").await?;
+    let unchanged = match (&active.baseline, &file) {
+        (None, None) => true,
+        (Some((id, digest)), Some(file)) => id == &file.id && digest == &file.digest,
+        _ => false,
+    };
+    if !unchanged {
+        return Err(
+            "The Drive workspace changed in another window or computer. Reopen it before saving."
+                .into(),
+        );
+    }
+    let data = json!({"format":"postdove-workspace-v1","workspace":workspace});
+    if !file.as_ref().is_some_and(|file| file.data == data) {
+        let baseline = save_private_file(
+            &http,
+            &token,
+            "workspace-v1",
+            "PostDove Workspace.json",
+            file,
+            &data,
+        )
+        .await?;
+        active.baseline = Some(baseline);
+    }
+    if firebase
+        .account()
+        .await
+        .is_ok_and(|(account, _)| account == uid)
+    {
+        lan.set_workspace(&data["workspace"])?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OnlinePairing {
     email: String,
@@ -214,26 +409,6 @@ async fn pairing_directory(
     Ok((directory, email))
 }
 
-fn pairing_file(directory: &Path, email: &str) -> PathBuf {
-    directory.join(format!("{:x}.json", Sha256::digest(email)))
-}
-
-fn lock_pairing(path: &Path) -> Result<std::fs::File, String> {
-    let directory = path
-        .parent()
-        .ok_or("Online pairing directory is missing.")?;
-    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("lock"))
-        .map_err(|error| error.to_string())?;
-    lock.try_lock()
-        .map_err(|_| "This online pairing is being changed in another PostDove window.")?;
-    Ok(lock)
-}
-
 fn read_pairing(path: &Path) -> Result<Option<OnlinePairing>, String> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
@@ -247,12 +422,15 @@ fn read_pairing(path: &Path) -> Result<Option<OnlinePairing>, String> {
 #[tauri::command]
 pub async fn drive_pairings(
     app: AppHandle,
+    login: State<'_, GoogleLogin>,
     writes: State<'_, DriveWrites>,
     firebase: State<'_, crate::firebase::Firebase>,
 ) -> Result<Vec<OnlinePairing>, String> {
     let _guard = writes.0.lock().await;
     let (directory, _) = pairing_directory(&app, &firebase).await?;
-    load_pairings(&directory)
+    let token = login.drive_token().await?;
+    let (_, pairings) = load_drive_pairings(&client()?, &token, &directory).await?;
+    Ok(pairings)
 }
 
 fn load_pairings(directory: &Path) -> Result<Vec<OnlinePairing>, String> {
@@ -277,6 +455,44 @@ fn load_pairings(directory: &Path) -> Result<Vec<OnlinePairing>, String> {
     Ok(pairings)
 }
 
+const PAIRINGS_TAG: &str = "pairings-v1";
+const PAIRINGS_NAME: &str = "PostDove Online Pairings.json";
+
+async fn load_drive_pairings(
+    http: &Client,
+    token: &str,
+    legacy: &Path,
+) -> Result<(Option<PrivateDriveFile>, Vec<OnlinePairing>), String> {
+    let file = private_file(http, token, PAIRINGS_TAG).await?;
+    if let Some(file) = file {
+        let pairings = serde_json::from_value(file.data.clone()).map_err(
+            |_| "The saved PostDove pairings file in Google Drive has an unsupported format.",
+        )?;
+        return Ok((Some(file), pairings));
+    }
+    let pairings = load_pairings(legacy)?;
+    if pairings.is_empty() {
+        return Ok((None, pairings));
+    }
+    save_drive_pairings(http, token, None, &pairings).await?;
+    let file = private_file(http, token, PAIRINGS_TAG)
+        .await?
+        .ok_or("Could not verify the migrated pairings in Google Drive.")?;
+    Ok((Some(file), pairings))
+}
+
+async fn save_drive_pairings(
+    http: &Client,
+    token: &str,
+    file: Option<PrivateDriveFile>,
+    pairings: &[OnlinePairing],
+) -> Result<(), String> {
+    let data =
+        serde_json::to_value(pairings).map_err(|_| "Could not encode the online pairings.")?;
+    save_private_file(http, token, PAIRINGS_TAG, PAIRINGS_NAME, file, &data).await?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn drive_outgoing_edits(
     app: AppHandle,
@@ -284,8 +500,8 @@ pub async fn drive_outgoing_edits(
     firebase: State<'_, crate::firebase::Firebase>,
 ) -> Result<Vec<Value>, String> {
     let (directory, _) = pairing_directory(&app, &firebase).await?;
-    let pairings = load_pairings(&directory)?;
     let token = login.drive_token().await?;
+    let (_, pairings) = load_drive_pairings(&client()?, &token, &directory).await?;
     let mut edits = Vec::new();
     for pairing in pairings {
         let Ok(id) = file_id(&pairing.file_id) else {
@@ -356,9 +572,13 @@ pub async fn drive_share_enabled(
     {
         return Err("Enter another Google account’s email address.".into());
     }
-    let path = pairing_file(&directory, &email);
-    let _pairing_lock = lock_pairing(&path)?;
-    let previous = read_pairing(&path)?;
+    let token = login.drive_token().await?;
+    let http = client()?;
+    let (file, mut pairings) = load_drive_pairings(&http, &token, &directory).await?;
+    let previous = pairings
+        .iter()
+        .find(|pairing| pairing.email == email)
+        .cloned();
     let snapshot = crate::lan::public_snapshot(&workspace, |folder| folder["lanShared"] == true);
     let enabled: Vec<String> = snapshot["folders"]
         .as_array()
@@ -375,38 +595,23 @@ pub async fn drive_share_enabled(
     {
         return Err("Restore the previously shared collections before updating this pairing, or disconnect it.".into());
     }
-    let token = login.drive_token().await?;
-    let http = client()?;
     let key = format!("{:x}", Sha256::digest(email.as_bytes()));
-    // Persist the expanded lock before updating a file that may already be shared.
-    if let Some(pairing) = &previous {
-        crate::write_json(
-            &path,
-            &OnlinePairing {
-                email: email.clone(),
-                folder_ids: enabled.clone(),
-                file_id: pairing.file_id.clone(),
-            },
-        )?;
-    }
     let id = publish_pairing(
         &http,
         &token,
         snapshot,
         &key,
-        previous.as_ref().map(|p| p.file_id.as_str()),
+        previous.as_ref().map(|pairing| pairing.file_id.as_str()),
     )
     .await?;
-    if previous.is_none() {
-        crate::write_json(
-            &path,
-            &OnlinePairing {
-                email: email.clone(),
-                folder_ids: enabled,
-                file_id: id.clone(),
-            },
-        )?;
-    }
+    pairings.retain(|pairing| pairing.email != email);
+    pairings.push(OnlinePairing {
+        email: email.clone(),
+        folder_ids: enabled,
+        file_id: id.clone(),
+    });
+    pairings.sort_by(|a, b| a.email.cmp(&b.email));
+    save_drive_pairings(&http, &token, file, &pairings).await?;
 
     let permissions = recipient_permissions(&http, &token, &id, &email).await?;
     if permissions.is_empty() {
@@ -502,11 +707,13 @@ pub async fn drive_disconnect_pairing(
 ) -> Result<(), String> {
     let _guard = writes.0.lock().await;
     let (directory, _) = pairing_directory(&app, &firebase).await?;
-    let path = pairing_file(&directory, &email);
-    let _pairing_lock = lock_pairing(&path)?;
-    let pairing = read_pairing(&path)?.ok_or("This online pairing is no longer active.")?;
     let token = login.drive_token().await?;
     let http = client()?;
+    let (file, mut pairings) = load_drive_pairings(&http, &token, &directory).await?;
+    let pairing = pairings
+        .iter()
+        .find(|pairing| pairing.email == email)
+        .ok_or("This online pairing is no longer active.")?;
     let id = file_id(&pairing.file_id)?;
     let endpoint =
         Url::parse(&format!("{FILES}/{id}/permissions")).map_err(|error| error.to_string())?;
@@ -539,8 +746,8 @@ pub async fn drive_disconnect_pairing(
         }
     }
     crate::firebase::withdraw(&firebase, &pairing.email, &id).await?;
-    std::fs::remove_file(path).map_err(|error| error.to_string())?;
-    Ok(())
+    pairings.retain(|pairing| pairing.email != email);
+    save_drive_pairings(&http, &token, file, &pairings).await
 }
 
 #[tauri::command]

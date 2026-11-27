@@ -163,6 +163,21 @@ semua pairing, atau **Forget host** di viewer untuk melupakan induk di PC itu.
 Apabila firewall Windows meminta izin, LAN Sharing menggunakan profil jaringan
 privat dan port yang ditampilkan.
 
+## Workspace di Google Drive
+
+PostDove membuka workspace privat akun Google yang sedang masuk. Koleksi,
+request, environment, riwayat, dan tampilan disimpan di **My Drive /
+PostDove Workspace.json**. Pairing online milik akun disimpan terpisah di
+**PostDove Online Pairings.json**. Simpanan workspace memerlukan koneksi Drive.
+Akun baru dimulai tanpa koleksi contoh.
+
+Untuk memindahkan workspace dari instalasi lama yang dipakai beberapa akun,
+set `POSTDOVE_LEGACY_OWNER_EMAIL` ke alamat pemilik data sebelum membuka
+PostDove. Hanya akun tersebut yang dapat mengimpor workspace lama ketika
+belum ada workspace di Drive. Data lama tetap tersedia untuk pemulihan.
+Identitas TLS dan pairing LAN tetap tersimpan pada perangkat karena mengikat
+akses ke perangkat yang dipasangkan.
+
 ## Berbagi koleksi lewat Google Drive
 
 1. Aktifkan ikon berbagi di sidebar untuk setiap koleksi atau subfolder yang
@@ -212,7 +227,7 @@ OAuth Desktop. Siapkan Firestore Standard dan deploy `firestore.rules`
 sebelum mengaktifkan undangan. Atur `POSTDOVE_FIREBASE_PROJECT_ID` dan
 `POSTDOVE_FIREBASE_API_KEY` dari konfigurasi Firebase. Sesi Firebase dan
 Drive disimpan di memori. Pengguna perlu login ulang setelah menutup
-aplikasi. Akses Drive diminta saat pengguna memilih **Connect Google Drive**.
+aplikasi. Akses Drive diminta saat pengguna masuk untuk membuka workspace.
 
 Untuk mengaktifkan pilihan langsung via Google Picker, aktifkan Google Picker
 API di proyek OAuth yang sama. Atur `POSTDOVE_GOOGLE_PICKER_KEY` ke API key

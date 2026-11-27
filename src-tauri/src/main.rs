@@ -39,13 +39,6 @@ fn path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
-fn write_workspace(path: &Path, mut workspace: Workspace) -> Result<(), String> {
-    for request in &mut workspace.requests {
-        request.bearer.clear();
-    }
-    write_json(path, &workspace)
-}
-
 fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
     let parent = path
         .parent()
@@ -112,11 +105,6 @@ fn load_workspace(app: AppHandle) -> Result<Workspace, String> {
         }
         Err(error) => Err(error.to_string()),
     }
-}
-
-#[tauri::command]
-fn save_workspace(app: AppHandle, workspace: Workspace) -> Result<(), String> {
-    write_workspace(&path(&app)?, workspace)
 }
 
 #[derive(Serialize)]
@@ -214,8 +202,18 @@ fn load_studio(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
 }
 
 #[tauri::command]
-fn save_studio(app: AppHandle, workspace: serde_json::Value) -> Result<(), String> {
-    write_json(&studio_path(&app)?, &workspace)
+async fn load_legacy_migration(
+    app: AppHandle,
+    firebase: tauri::State<'_, firebase::Firebase>,
+) -> Result<Option<serde_json::Value>, String> {
+    let (_, email) = firebase.account().await?;
+    if !std::env::var("POSTDOVE_LEGACY_OWNER_EMAIL").ok().is_some_and(|owner| owner.eq_ignore_ascii_case(&email)) {
+        return Ok(None);
+    }
+    if let Some(workspace) = load_studio(app.clone())? {
+        return Ok(Some(serde_json::json!({"workspace":workspace})));
+    }
+    Ok(Some(serde_json::json!({"legacy":load_workspace(app)?})))
 }
 
 #[tauri::command]
@@ -228,8 +226,8 @@ async fn execute_studio(
 
 fn main() {
     let commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
-        load_workspace, load_studio, save_studio, execute_studio,
-        save_workspace, send_request, import_collection, export_collection, collection_json,
+        load_legacy_migration, drive::drive_load_workspace, drive::drive_save_workspace, execute_studio,
+        send_request, import_collection, export_collection, collection_json,
         lan::lan_status, lan::lan_host_start, lan::lan_host_stop, lan::lan_revoke,
         lan::lan_invite_info, lan::lan_pair, lan::lan_read, lan::lan_forget,
         drive::drive_pairings, drive::drive_outgoing_edits, drive::drive_share_enabled, drive::drive_disconnect_pairing, drive::drive_read, drive::drive_save_request,
@@ -243,10 +241,10 @@ fn main() {
         .manage(firebase::Firebase::default())
         .manage(online::GoogleLogin::default())
         .manage(drive::DriveWrites::default())
+        .manage(drive::CloudWorkspace::default())
         .setup(|app| {
-            let workspace = studio_path(app.handle()).map_err(std::io::Error::other)?;
             let directory = app.path().app_data_dir()?.join("lan");
-            let lan = lan::Lan::load(directory, workspace).map_err(std::io::Error::other)?;
+            let lan = lan::Lan::load(directory).map_err(std::io::Error::other)?;
             app.manage(lan);
             Ok(())
         })

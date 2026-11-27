@@ -18,6 +18,7 @@ export interface StudioWorkspace {
   history: HistoryEntry[];
   theme?: string;
   appearance?: Appearance;
+  driveSession?: string;
 }
 
 interface LegacyCollection {
@@ -205,26 +206,53 @@ export async function exportDesktopCollection(id: string, folders: CollectionFol
   });
 }
 
-export async function loadDesktopWorkspace(): Promise<StudioWorkspace> {
-  const saved = await invoke<StudioWorkspace | null>('load_studio');
-  if (saved) return migrateCollectionProfiles(saved);
-  const legacy = await invoke<LegacyWorkspace>('load_workspace');
-  const state: StudioWorkspace = {
-    folders: [...INITIAL_FOLDERS], requests: [...INITIAL_REQUESTS], environments: [...INITIAL_ENVIRONMENTS],
-    activeEnvId: INITIAL_ENVIRONMENTS[0].id, history: [],
-  };
-  for (const [index, collection] of legacy.collections.entries()) {
-    const requests = legacy.requests.filter(request => request.collection === index);
-    if (!requests.length && collection.name === 'Local collection' && !collection.docs && !collection.variables
-      && !collection.headers && !collection.folders.length && !Object.keys(collection.environments ?? {}).length) continue;
-    const adapted = adaptCollection(collection, requests);
-    state.folders.push(...adapted.folders);
-    state.requests.push(...adapted.requests);
-    state.environments.push(...adapted.environments);
+function removeSampleCollections(workspace: StudioWorkspace): StudioWorkspace {
+  const exampleRequests = new Set(INITIAL_REQUESTS.map(request => request.id));
+  const exampleFolders = new Map(INITIAL_FOLDERS.map(folder => [folder.id, folder.name]));
+  const requests = workspace.requests.filter(request => !exampleRequests.has(request.id));
+  const byId = new Map(workspace.folders.map(folder => [folder.id, folder]));
+  const preserved = new Set([
+    ...workspace.folders.filter(folder => exampleFolders.get(folder.id) !== folder.name).map(folder => folder.id),
+    ...requests.map(request => request.folderId),
+  ]);
+  for (const id of [...preserved]) {
+    for (const ancestor of folderAncestors(id, byId)) preserved.add(ancestor.id);
   }
-  return migrateCollectionProfiles(state);
+  const usedNames = new Set(workspace.folders.map(folder => folder.name));
+  let nextName = 1;
+  const folders = workspace.folders.filter(folder => preserved.has(folder.id)).map(folder => {
+    if (exampleFolders.get(folder.id) !== folder.name) return folder;
+    let name: string;
+    do { name = `Migrated Collection ${nextName++}`; } while (usedNames.has(name));
+    usedNames.add(name);
+    return { ...folder, name };
+  });
+  return { ...workspace, requests, folders, history: workspace.history.filter(entry => !exampleRequests.has(entry.requestId)) };
 }
 
-export function saveDesktopWorkspace(workspace: StudioWorkspace) {
-  return invoke<void>('save_studio', { workspace });
+export async function loadDesktopWorkspace(): Promise<StudioWorkspace> {
+  const { workspace: saved, session } = await invoke<{ workspace: StudioWorkspace | null; session: string }>('drive_load_workspace');
+  if (saved) return { ...migrateCollectionProfiles(removeSampleCollections(saved)), driveSession: session };
+  const migration = await invoke<{ workspace?: StudioWorkspace; legacy?: LegacyWorkspace } | null>('load_legacy_migration');
+  const state = migration?.workspace ? removeSampleCollections(migration.workspace)
+    : { folders: [], requests: [], environments: [], activeEnvId: '', history: [] } as StudioWorkspace;
+  if (migration?.legacy) {
+    const legacy = migration.legacy;
+    for (const [index, collection] of legacy.collections.entries()) {
+      const requests = legacy.requests.filter(request => request.collection === index);
+      if (!requests.length && collection.name === 'Local collection' && !collection.docs && !collection.variables
+        && !collection.headers && !collection.folders.length && !Object.keys(collection.environments ?? {}).length) continue;
+      const adapted = adaptCollection(collection, requests);
+      state.folders.push(...adapted.folders);
+      state.requests.push(...adapted.requests);
+      state.environments.push(...adapted.environments);
+    }
+  }
+  const workspace = { ...migrateCollectionProfiles(state), driveSession: session };
+  await saveDesktopWorkspace(workspace);
+  return workspace;
+}
+
+export function saveDesktopWorkspace({ driveSession, ...workspace }: StudioWorkspace) {
+  return invoke<void>('drive_save_workspace', { workspace, session: driveSession });
 }

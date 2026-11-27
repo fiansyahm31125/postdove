@@ -41,11 +41,6 @@ import type {
   SplitOrientation,
 } from './types/api';
 import {
-  INITIAL_ENVIRONMENTS,
-  INITIAL_FOLDERS,
-  INITIAL_REQUESTS,
-} from './data/seedData';
-import {
   buildUrlWithParams,
   evaluateAssertions,
   environmentForRequest,
@@ -289,7 +284,6 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
 
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const hasAutoExecutedRef = useRef(false);
 
   const saveQueue = useRef(Promise.resolve());
   const lastSnapshot = useRef<StudioWorkspace>(initial);
@@ -323,11 +317,11 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
   }, [reportResult]);
 
   useEffect(() => {
-    const state: StudioWorkspace = { folders, requests, environments, activeEnvId, history: history.slice(0, 60), appearance };
+    const state: StudioWorkspace = { folders, requests, environments, activeEnvId, history: history.slice(0, 60), appearance, driveSession: initial.driveSession };
     lastSnapshot.current = state;
     const changes = pendingChanges.current.splice(0);
     enqueueSave(state, changes);
-  }, [folders, requests, environments, activeEnvId, history, appearance, enqueueSave]);
+  }, [folders, requests, environments, activeEnvId, history, appearance, initial.driveSession, enqueueSave]);
 
   const draftsForSync = useRef(drafts);
   useEffect(() => { draftsForSync.current = drafts; }, [drafts]);
@@ -661,7 +655,10 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
 
   const handleCreateRequest = useCallback(
     (folderId: string) => {
-      const selectedFolder = folderId || folders[0]?.id || 'col_payments';
+      const selectedFolder = folderId || folders[0]?.id || uid('col');
+      if (!folders.length) {
+        setFolders(current => [...current, { id: selectedFolder, name: 'My Collection', description: '', collectionProfiles: localProfiles() }]);
+      }
       const profiles = profilesForCollection(collectionRoot(selectedFolder));
       const newReq: ApiRequest = {
         ...requestProfile(profiles),
@@ -669,7 +666,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
         folderId: selectedFolder,
         name: 'Untitled Request',
         method: 'GET',
-        url: '{{baseUrl}}/echo',
+        url: '',
         params: [],
         headers: [
           {
@@ -814,10 +811,14 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
 
   const handleImportCurl = useCallback(
     (curlText: string): string | null => {
-      const parsed = parseCurlCommand(curlText, folders[0]?.id || 'col_public');
+      const folderId = folders[0]?.id ?? uid('col');
+      const parsed = parseCurlCommand(curlText, folderId);
       if (!parsed) {
         reportResult({ action: 'Import cURL request', ok: false, detail: 'Could not detect a valid HTTP URL in the cURL command.' });
         return 'Could not detect a valid HTTP URL in the cURL command.';
+      }
+      if (!folders.length) {
+        setFolders(current => [...current, { id: folderId, name: 'My Collection', description: '', collectionProfiles: localProfiles() }]);
       }
       const request = { ...parsed, ...requestProfile(profilesForCollection(collectionRoot(parsed.folderId))) };
       markChange("Import cURL request");
@@ -934,17 +935,6 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
     },
     [activeEnv, reportResult]
   );
-
-  // Auto-run the initial request once on mount so the IDE opens with live inspected data
-  useEffect(() => {
-    if (!hasAutoExecutedRef.current && activeRequest) {
-      hasAutoExecutedRef.current = true;
-      if (activeRequest.id === INITIAL_REQUESTS[0].id && activeRequest.method === 'GET'
-        && resolveRequestPayload(activeRequest, activeEnv).url.startsWith('/api/sandbox/transactions')) {
-        executeRequest(activeRequest);
-      }
-    }
-  }, [activeRequest, executeRequest]);
 
   // Global keyboard shortcuts (Cmd+K, Cmd+Enter, Cmd+S, Escape)
   useEffect(() => {
@@ -1379,7 +1369,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
                   })}
                   <button
                     type="button"
-                    onClick={() => handleCreateRequest(folders[0]?.id || 'col_payments')}
+                    onClick={() => handleCreateRequest(folders[0]?.id || '')}
                     title="New Request Tab"
                     className="h-[33px] px-2.5 text-ui-secondary hover:text-ui-ink hover:bg-ui-elevated/50 transition-colors cursor-pointer shrink-0"
                   >
@@ -1577,7 +1567,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
                   </p>
                   <button
                     type="button"
-                    onClick={() => handleCreateRequest(folders[0]?.id || 'col_payments')}
+                    onClick={() => handleCreateRequest(folders[0]?.id || '')}
                     className="mt-4 inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-ui-accent hover:bg-ui-accent-hover text-white text-[12px] font-semibold rounded-[4px] cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
@@ -1804,7 +1794,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
         onSelectRequest={handleSelectRequest}
         onSelectEnv={selectEnvironment}
         onNavigate={setActiveScreen}
-        onNewRequest={() => handleCreateRequest(folders[0]?.id || 'col_payments')}
+        onNewRequest={() => handleCreateRequest(folders[0]?.id || '')}
         onToggleSplit={() =>
           setSplitOrientation((o) => (o === 'horizontal' ? 'vertical' : 'horizontal'))
         }
