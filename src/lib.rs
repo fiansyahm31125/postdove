@@ -17,6 +17,8 @@ pub struct Request {
     pub url: String,
     pub headers: String,
     pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_bytes: Option<Vec<u8>>,
     pub bearer: String,
 }
 
@@ -31,6 +33,7 @@ impl Default for Request {
             url: String::new(),
             headers: String::new(),
             body: String::new(),
+            body_bytes: None,
             bearer: String::new(),
         }
     }
@@ -154,7 +157,9 @@ pub async fn send(request: Request) -> Result<Response, String> {
         .build()
         .map_err(|error| format!("Could not initialize HTTP client: {error}"))?;
     let mut builder = client.request(method, url).headers(headers);
-    if !request.body.is_empty() {
+    if let Some(bytes) = request.body_bytes {
+        builder = builder.body(bytes);
+    } else if !request.body.is_empty() {
         builder = builder.body(request.body);
     }
 

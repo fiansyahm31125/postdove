@@ -146,10 +146,20 @@ export function resolveRequestPayload(request: ApiRequest, env: ApiEnvironment |
   }
 
   let body = '';
+  let multipart:
+    | Array<{ key: string; fieldType: 'text' | 'file'; value: string; contentType: string }>
+    | undefined;
+  let binaryFile: string | undefined;
+
   if (request.bodyMode === 'json') {
     body = interpolateVariables(request.bodyContent, env);
     if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) {
       headers['Content-Type'] = 'application/json';
+    }
+  } else if (request.bodyMode === 'xml') {
+    body = interpolateVariables(request.bodyContent, env);
+    if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) {
+      headers['Content-Type'] = 'application/xml';
     }
   } else if (request.bodyMode === 'raw') {
     body = interpolateVariables(request.bodyContent, env);
@@ -166,6 +176,16 @@ export function resolveRequestPayload(request: ApiRequest, env: ApiEnvironment |
     if (!Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) {
       headers['Content-Type'] = 'application/x-www-form-urlencoded';
     }
+  } else if (request.bodyMode === 'multipart') {
+    const activeFields = (request.multipartBody ?? []).filter((f) => f.enabled && f.key.trim());
+    multipart = activeFields.map((f) => ({
+      key: interpolateVariables(f.key.trim(), env),
+      fieldType: f.type,
+      value: f.type === 'file' ? f.value.trim() : interpolateVariables(f.value, env),
+      contentType: f.contentType.trim(),
+    }));
+  } else if (request.bodyMode === 'binary') {
+    binaryFile = request.binaryFilePath?.trim() || undefined;
   }
 
   return {
@@ -173,6 +193,8 @@ export function resolveRequestPayload(request: ApiRequest, env: ApiEnvironment |
     url: finalUrl,
     headers,
     body,
+    ...(multipart ? { multipart } : {}),
+    ...(binaryFile ? { binaryFile } : {}),
   };
 }
 
@@ -334,7 +356,7 @@ export function generateCodeSnippet(
   request: ApiRequest,
   env: ApiEnvironment | undefined
 ): string {
-  const { method, url, headers, body } = resolveRequestPayload(request, env);
+  const { method, url, headers, body, multipart, binaryFile } = resolveRequestPayload(request, env);
   const fullUrl = url.startsWith('/') ? `${window.location.origin}${url}` : url;
 
   if (lang === 'curl') {
@@ -343,7 +365,17 @@ export function generateCodeSnippet(
       lines[lines.length - 1] += ' \\';
       lines.push(`  --header '${k}: ${v}'`);
     }
-    if (body && method !== 'GET') {
+    if (multipart && multipart.length > 0 && method !== 'GET') {
+      for (const field of multipart) {
+        lines[lines.length - 1] += ' \\';
+        const val = field.fieldType === 'file' ? `@${field.value}` : field.value;
+        const ct = field.contentType ? `;type=${field.contentType}` : '';
+        lines.push(`  --form '${field.key}=${val.replace(/'/g, "'\\''")}${ct}'`);
+      }
+    } else if (binaryFile && method !== 'GET') {
+      lines[lines.length - 1] += ' \\';
+      lines.push(`  --data-binary '@${binaryFile.replace(/'/g, "'\\''")}'`);
+    } else if (body && method !== 'GET') {
       lines[lines.length - 1] += ' \\';
       lines.push(`  --data '${body.replace(/'/g, "'\\''")}'`);
     }

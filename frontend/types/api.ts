@@ -1,6 +1,6 @@
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
-export type BodyMode = 'none' | 'json' | 'raw' | 'form';
+export type BodyMode = 'none' | 'multipart' | 'form' | 'json' | 'xml' | 'raw' | 'binary';
 
 export type AuthType = 'none' | 'bearer' | 'apikey' | 'basic';
 
@@ -12,6 +12,16 @@ export interface KeyValueItem {
   id: string;
   key: string;
   value: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface MultipartFormItem {
+  id: string;
+  key: string;
+  value: string;
+  type: 'text' | 'file';
+  contentType: string;
   description: string;
   enabled: boolean;
 }
@@ -59,6 +69,8 @@ export interface ApiRequest {
   bodyMode: BodyMode;
   bodyContent: string;
   formBody: KeyValueItem[];
+  multipartBody?: MultipartFormItem[];
+  binaryFilePath?: string;
   assertions: AssertionRule[];
   updatedAt: string;
   desktopVariables?: EnvironmentVariable[];

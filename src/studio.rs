@@ -10,6 +10,19 @@ use time::{
 use uuid::Uuid;
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultipartField {
+    pub key: String,
+    #[serde(default)]
+    pub field_type: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub content_type: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StudioRequest {
     method: String,
     url: String,
@@ -17,6 +30,101 @@ pub struct StudioRequest {
     headers: BTreeMap<String, String>,
     #[serde(default)]
     body: String,
+    #[serde(default)]
+    multipart: Option<Vec<MultipartField>>,
+    #[serde(default)]
+    binary_file: Option<String>,
+}
+
+pub fn guess_content_type(path: &str) -> &'static str {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("json") => "application/json",
+        Some("xml") => "application/xml",
+        Some("txt") | Some("log") => "text/plain",
+        Some("csv") => "text/csv",
+        Some("html") | Some("htm") => "text/html",
+        Some("pdf") => "application/pdf",
+        Some("xls") => "application/vnd.ms-excel",
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Some("doc") => "application/msword",
+        Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("zip") => "application/zip",
+        Some("mp3") => "audio/mpeg",
+        Some("mp4") => "video/mp4",
+        _ => "application/octet-stream",
+    }
+}
+
+fn escape_disposition(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace(['\r', '\n'], "")
+}
+
+fn build_multipart_body(fields: &[MultipartField]) -> Result<(String, Vec<u8>), String> {
+    let boundary = format!("----PostdoveBoundary{}", Uuid::new_v4().simple());
+    let mut body = Vec::new();
+    for field in fields {
+        let key = field.key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let escaped_key = escape_disposition(key);
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        if field.field_type.eq_ignore_ascii_case("file") {
+            let file_path = field.value.trim();
+            if file_path.is_empty() {
+                return Err(format!("No file selected for multipart field '{key}'."));
+            }
+            let bytes = std::fs::read(file_path).map_err(|error| {
+                format!("Could not read file for field '{key}' ({file_path}): {error}")
+            })?;
+            let filename = std::path::Path::new(file_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("file");
+            let escaped_filename = escape_disposition(filename);
+            let mime = if field.content_type.trim().is_empty() {
+                guess_content_type(file_path)
+            } else {
+                field.content_type.trim()
+            };
+            body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{escaped_key}\"; filename=\"{escaped_filename}\"\r\nContent-Type: {mime}\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+            body.extend_from_slice(&bytes);
+            body.extend_from_slice(b"\r\n");
+        } else {
+            body.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{escaped_key}\"\r\n").as_bytes(),
+            );
+            let ct = field.content_type.trim();
+            if !ct.is_empty() {
+                if ct.contains(['\r', '\n']) {
+                    return Err(format!("Invalid Content-Type on field '{key}'."));
+                }
+                body.extend_from_slice(format!("Content-Type: {ct}\r\n").as_bytes());
+            }
+            body.extend_from_slice(b"\r\n");
+            body.extend_from_slice(field.value.as_bytes());
+            body.extend_from_slice(b"\r\n");
+        }
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Ok((format!("multipart/form-data; boundary={boundary}"), body))
 }
 
 #[derive(Serialize)]
@@ -91,6 +199,34 @@ impl Sandbox {
         }
 
         // The desktop app executes locally through the same HTTP engine as MCP.
+        let mut body_bytes = None;
+        if let Some(fields) = input.multipart.as_deref() {
+            let (content_type, bytes) = build_multipart_body(fields)?;
+            input
+                .headers
+                .retain(|name, _| !name.trim().eq_ignore_ascii_case("content-type"));
+            input.headers.insert("Content-Type".into(), content_type);
+            body_bytes = Some(bytes);
+        } else if let Some(path) = input
+            .binary_file
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let bytes = std::fs::read(path)
+                .map_err(|error| format!("Could not read binary file ({path}): {error}"))?;
+            let has_ct = input
+                .headers
+                .keys()
+                .any(|name| name.trim().eq_ignore_ascii_case("content-type"));
+            if !has_ct {
+                input
+                    .headers
+                    .insert("Content-Type".into(), guess_content_type(path).into());
+            }
+            body_bytes = Some(bytes);
+        }
+
         let mut headers = Vec::new();
         for (key, value) in input.headers {
             if key.contains(['\n', '\r', ':']) || value.contains(['\n', '\r']) {
@@ -102,7 +238,12 @@ impl Sandbox {
             method: input.method,
             url: url.clone(),
             headers: headers.join("\n"),
-            body: input.body,
+            body: if body_bytes.is_some() {
+                String::new()
+            } else {
+                input.body
+            },
+            body_bytes,
             ..Request::default()
         })
         .await?;
@@ -377,6 +518,8 @@ mod tests {
                 url: url.into(),
                 body: body.into(),
                 headers: BTreeMap::new(),
+                multipart: None,
+                binary_file: None,
             })
         };
         let created = run(
@@ -401,5 +544,77 @@ mod tests {
         let list: Value = serde_json::from_str(&list.body).unwrap();
         assert_eq!(list["data"][0]["id"], id);
         assert_eq!(list["data"][0]["status"], "succeeded");
+    }
+
+    #[tokio::test]
+    async fn sends_multipart_form_with_text_and_file() {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+
+        let temp_file = std::env::temp_dir().join(format!("postdove-test-{}.xls", Uuid::new_v4()));
+        std::fs::write(&temp_file, b"FAKE_EXCEL_BYTES_123").unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/upload", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut raw = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                match socket.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&chunk[..n]);
+                        if raw.windows(4).any(|w| w == b"--\r\n") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let text = String::from_utf8_lossy(&raw).into_owned();
+            assert!(text.to_ascii_lowercase().contains("multipart/form-data; boundary="));
+            assert!(text.contains("name=\"message_type\"\r\n\r\nexcel\r\n"));
+            assert!(text.contains("name=\"file\"; filename=\"postdove-test-"));
+            assert!(text.contains("Content-Type: application/vnd.ms-excel"));
+            assert!(text.contains("FAKE_EXCEL_BYTES_123"));
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}")
+                .unwrap();
+        });
+
+        let sandbox = Sandbox::default();
+        let reply = sandbox
+            .execute(StudioRequest {
+                method: "POST".into(),
+                url,
+                headers: BTreeMap::new(),
+                body: String::new(),
+                multipart: Some(vec![
+                    MultipartField {
+                        key: "message_type".into(),
+                        field_type: "text".into(),
+                        value: "excel".into(),
+                        content_type: String::new(),
+                    },
+                    MultipartField {
+                        key: "file".into(),
+                        field_type: "file".into(),
+                        value: temp_file.to_string_lossy().into_owned(),
+                        content_type: String::new(),
+                    },
+                ]),
+                binary_file: None,
+            })
+            .await
+            .unwrap();
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&temp_file);
+        assert_eq!(reply.status, 200);
     }
 }

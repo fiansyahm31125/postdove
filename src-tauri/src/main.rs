@@ -216,6 +216,33 @@ async fn load_legacy_migration(
     Ok(Some(serde_json::json!({"legacy":load_workspace(app)?})))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PickedFile {
+    path: String,
+    name: String,
+    content_type: String,
+}
+
+#[tauri::command]
+async fn pick_file() -> Result<Option<PickedFile>, String> {
+    let Some(file) = rfd::AsyncFileDialog::new().pick_file().await else {
+        return Ok(None);
+    };
+    let path = file.path().to_string_lossy().into_owned();
+    let name = file
+        .path()
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.clone());
+    let content_type = postdove::studio::guess_content_type(&path).to_owned();
+    Ok(Some(PickedFile {
+        path,
+        name,
+        content_type,
+    }))
+}
+
 #[tauri::command]
 async fn execute_studio(
     sandbox: tauri::State<'_, Sandbox>,
@@ -226,7 +253,7 @@ async fn execute_studio(
 
 fn main() {
     let commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
-        load_legacy_migration, drive::drive_load_workspace, drive::drive_save_workspace, execute_studio,
+        load_legacy_migration, drive::drive_load_workspace, drive::drive_save_workspace, execute_studio, pick_file,
         send_request, import_collection, export_collection, collection_json,
         lan::lan_status, lan::lan_host_start, lan::lan_host_stop, lan::lan_revoke,
         lan::lan_invite_info, lan::lan_pair, lan::lan_read, lan::lan_forget,

@@ -1,6 +1,22 @@
 import { VariableValue, type VariableActions } from './VariableEditor';
-import { useMemo, useState } from 'react';
-import { Check, Copy, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Ban,
+  Braces,
+  Check,
+  ChevronDown,
+  Code2,
+  Copy,
+  Eye,
+  EyeOff,
+  File,
+  FileText,
+  List,
+  Plus,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react';
 import type {
   ApiEnvironment,
   ApiRequest,
@@ -11,8 +27,48 @@ import type {
   BodyMode,
 } from '../types/api';
 import { KeyValueTable } from './KeyValueTable';
+import { MultipartFormTable } from './MultipartFormTable';
 import { JsonCodeEditor } from './JsonCodeEditor';
+import { pickDesktopFile } from '../main';
 import { buildUrlWithParams, generateCodeSnippet, uid } from '../utils/httpUtils';
+
+const BODY_MODE_GROUPS: Array<{
+  group: string;
+  options: Array<{ id: BodyMode; label: string; icon: typeof FileText }>;
+}> = [
+  {
+    group: 'FORM',
+    options: [
+      { id: 'multipart', label: 'Multipart Form', icon: Upload },
+      { id: 'form', label: 'Form URL Encoded', icon: List },
+    ],
+  },
+  {
+    group: 'RAW',
+    options: [
+      { id: 'json', label: 'JSON', icon: Braces },
+      { id: 'xml', label: 'XML', icon: Code2 },
+      { id: 'raw', label: 'TEXT', icon: FileText },
+    ],
+  },
+  {
+    group: 'OTHER',
+    options: [
+      { id: 'binary', label: 'File / Binary', icon: File },
+      { id: 'none', label: 'No Body', icon: Ban },
+    ],
+  },
+];
+
+const BODY_MODE_LABELS: Record<BodyMode, string> = {
+  multipart: 'Multipart Form',
+  form: 'Form URL Encoded',
+  json: 'JSON',
+  xml: 'XML',
+  raw: 'TEXT',
+  binary: 'File / Binary',
+  none: 'No Body',
+};
 
 type RequestTab = 'params' | 'headers' | 'auth' | 'body' | 'tests' | 'code';
 
@@ -26,8 +82,21 @@ interface RequestPaneProps {
 export function RequestPane({ request, activeEnv, onChange, variableActions }: RequestPaneProps) {
   const [activeTab, setActiveTab] = useState<RequestTab>('params');
   const [showSecret, setShowSecret] = useState(false);
+  const [bodyMenuOpen, setBodyMenuOpen] = useState(false);
+  const bodyMenuRef = useRef<HTMLDivElement>(null);
   const [codeLang, setCodeLang] = useState<'curl' | 'fetch' | 'python' | 'go'>('curl');
   const [copiedCode, setCopiedCode] = useState(false);
+
+  useEffect(() => {
+    if (!bodyMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (bodyMenuRef.current && !bodyMenuRef.current.contains(event.target as Node)) {
+        setBodyMenuOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', onPointerDown);
+    return () => window.removeEventListener('mousedown', onPointerDown);
+  }, [bodyMenuOpen]);
 
   const activeParamsCount = request.params.filter((p) => p.enabled && p.key.trim()).length;
   const activeHeadersCount = request.headers.filter((h) => h.enabled && h.key.trim()).length;
@@ -304,31 +373,69 @@ export function RequestPane({ request, activeEnv, onChange, variableActions }: R
 
         {activeTab === 'body' && (
           <div className="flex flex-col h-full gap-2.5">
-            <div className="flex items-center gap-4 shrink-0">
-              {(
-                [
-                  { id: 'none', label: 'None' },
-                  { id: 'json', label: 'JSON' },
-                  { id: 'raw', label: 'Raw Text' },
-                  { id: 'form', label: 'Form URL-Encoded' },
-                ] as Array<{ id: BodyMode; label: string }>
-              ).map((opt) => (
-                <label
-                  key={opt.id}
-                  className="inline-flex items-center gap-1.5 text-[12px] text-ui-secondary hover:text-ui-ink cursor-pointer select-none"
+            <div className="flex items-center justify-between gap-2 shrink-0">
+              <span className="text-[11px] text-ui-muted">
+                {request.bodyMode === 'multipart'
+                  ? 'Send key-value pairs and file uploads as multipart/form-data'
+                  : request.bodyMode === 'form'
+                  ? 'Send fields as application/x-www-form-urlencoded'
+                  : request.bodyMode === 'binary'
+                  ? 'Send a local file as raw binary payload'
+                  : request.bodyMode === 'none'
+                  ? 'No request payload'
+                  : `Raw ${BODY_MODE_LABELS[request.bodyMode]} payload`}
+              </span>
+              <div ref={bodyMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setBodyMenuOpen((open) => !open)}
+                  aria-haspopup="menu"
+                  aria-expanded={bodyMenuOpen}
+                  className="inline-flex items-center gap-1.5 h-[28px] px-2.5 rounded-[4px] bg-ui-elevated hover:bg-ui-hover border border-ui-border text-[12px] font-medium text-ui-accent transition-colors cursor-pointer whitespace-nowrap"
                 >
-                  <input
-                    type="radio"
-                    name={`body_mode_${request.id}`}
-                    checked={request.bodyMode === opt.id}
-                    onChange={() => onChange({ ...request, bodyMode: opt.id })}
-                    className="accent-ui-accent w-3.5 h-3.5 cursor-pointer"
-                  />
-                  <span className={request.bodyMode === opt.id ? 'text-ui-ink font-medium' : ''}>
-                    {opt.label}
-                  </span>
-                </label>
-              ))}
+                  <span>{BODY_MODE_LABELS[request.bodyMode] ?? request.bodyMode}</span>
+                  <ChevronDown className="w-3.5 h-3.5 text-ui-secondary" />
+                </button>
+                {bodyMenuOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 mt-1 w-[210px] rounded-[6px] bg-ui-elevated border border-ui-border ide-shadow py-1.5 z-30"
+                  >
+                    {BODY_MODE_GROUPS.map((section, sectionIdx) => (
+                      <div key={section.group} className={sectionIdx > 0 ? 'mt-1 pt-1 border-t border-ui-border' : ''}>
+                        <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.05em] text-ui-muted">
+                          {section.group}
+                        </div>
+                        {section.options.map((opt) => {
+                          const Icon = opt.icon;
+                          const selected = request.bodyMode === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={selected}
+                              onClick={() => {
+                                onChange({ ...request, bodyMode: opt.id });
+                                setBodyMenuOpen(false);
+                              }}
+                              className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-[12px] text-left transition-colors cursor-pointer ${
+                                selected
+                                  ? 'bg-ui-accent/15 text-ui-accent font-medium'
+                                  : 'text-ui-ink hover:bg-ui-hover'
+                              }`}
+                            >
+                              <Icon className={`w-3.5 h-3.5 shrink-0 ${selected ? 'text-ui-accent' : 'text-ui-secondary'}`} />
+                              <span className="flex-1">{opt.label}</span>
+                              {selected && <Check className="w-3.5 h-3.5 shrink-0 text-ui-accent" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {request.bodyMode === 'none' && (
@@ -337,12 +444,20 @@ export function RequestPane({ request, activeEnv, onChange, variableActions }: R
               </div>
             )}
 
-            {(request.bodyMode === 'json' || request.bodyMode === 'raw') && (
+            {request.bodyMode === 'multipart' && (
+              <MultipartFormTable
+                items={request.multipartBody ?? []}
+                onChange={(multipartBody) => onChange({ ...request, multipartBody })}
+                variableActions={variableActions}
+              />
+            )}
+
+            {(request.bodyMode === 'json' || request.bodyMode === 'xml' || request.bodyMode === 'raw') && (
               <div className="flex-1 min-h-0">
                 <JsonCodeEditor
                   value={request.bodyContent}
                   onChange={(bodyContent) => onChange({ ...request, bodyContent })}
-                  mode={request.bodyMode}
+                  mode={request.bodyMode === 'json' ? 'json' : 'raw'}
                   variableActions={variableActions}
                 />
               </div>
@@ -357,6 +472,40 @@ export function RequestPane({ request, activeEnv, onChange, variableActions }: R
                 valuePlaceholder="field_value"
                 emptyMessage="No form fields added yet."
               />
+            )}
+
+            {request.bodyMode === 'binary' && (
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 rounded-[4px] border border-dashed border-ui-border bg-ui-canvas/60 p-6">
+                {request.binaryFilePath ? (
+                  <div className="flex items-center gap-2 max-w-full px-3 py-1.5 rounded-[4px] bg-ui-elevated border border-ui-border text-[12px] font-mono text-ui-ink">
+                    <File className="w-4 h-4 shrink-0 text-ui-accent" />
+                    <span className="truncate" title={request.binaryFilePath}>
+                      {request.binaryFilePath}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onChange({ ...request, binaryFilePath: '' })}
+                      title="Clear file"
+                      className="shrink-0 text-ui-muted hover:text-ui-danger cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-[12px] text-ui-muted">No binary file selected.</p>
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const picked = await pickDesktopFile().catch(() => null);
+                    if (picked) onChange({ ...request, binaryFilePath: picked.path });
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[4px] bg-ui-elevated hover:bg-ui-hover border border-ui-border text-[12px] font-medium text-ui-ink transition-colors cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5 text-ui-accent" />
+                  {request.binaryFilePath ? 'Change File' : 'Select File'}
+                </button>
+              </div>
             )}
           </div>
         )}

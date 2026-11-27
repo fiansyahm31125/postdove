@@ -177,6 +177,11 @@ fn extract_bearer(auth: &Value) -> String {
             }
         }
     }
+    if auth["bearer"]["key"].as_str() == Some("token")
+        && let Some(value) = auth["bearer"]["value"].as_str()
+    {
+        return value.to_owned();
+    }
     auth["bearer"]["token"]
         .as_str()
         .unwrap_or_default()

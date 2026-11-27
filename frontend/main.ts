@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ApiEnvironment, ApiRequest, CollectionFolder, CollectionVariableProfiles, EnvironmentVariable, HistoryEntry, KeyValueItem } from './types/api';
+import type { ApiEnvironment, ApiRequest, CollectionFolder, CollectionVariableProfiles, EnvironmentVariable, HistoryEntry, KeyValueItem, MultipartFormItem } from './types/api';
 import { INITIAL_ENVIRONMENTS, INITIAL_FOLDERS, INITIAL_REQUESTS } from './data/seedData';
 import { parseParamsFromUrl, uid } from './utils/httpUtils';
 import { folderAncestors } from './utils/folderTree';
@@ -38,7 +38,34 @@ interface WireReply {
   body: string; sizeBytes: number; durationMs: number; finalUrl: string;
 }
 
-export async function executeDesktop(request: { method: string; url: string; headers: Record<string, string>; body: string }, signal?: AbortSignal) {
+export interface PickedFile {
+  path: string;
+  name: string;
+  contentType: string;
+}
+
+export async function pickDesktopFile() {
+  return invoke<PickedFile | null>('pick_file');
+}
+
+export interface DesktopMultipartField {
+  key: string;
+  fieldType: 'text' | 'file';
+  value: string;
+  contentType: string;
+}
+
+export async function executeDesktop(
+  request: {
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+    body: string;
+    multipart?: DesktopMultipartField[];
+    binaryFile?: string;
+  },
+  signal?: AbortSignal
+) {
   signal?.throwIfAborted();
   try {
     const data = await invoke<WireReply>('execute_studio', { request });
@@ -133,7 +160,11 @@ function postmanAuthValue(entries: unknown, key: string): string {
     return typeof match?.value === 'string' ? match.value : '';
   }
   if (entries && typeof entries === 'object') {
-    const value = (entries as Record<string, unknown>)[key];
+    const obj = entries as Record<string, unknown>;
+    if (obj.key === key && typeof obj.value === 'string') {
+      return obj.value;
+    }
+    const value = obj[key];
     return typeof value === 'string' ? value : '';
   }
   return '';
@@ -170,11 +201,34 @@ function adaptPostmanRequestExtras(postmanItem: unknown, fallbackBearer: string,
   let bodyMode: ApiRequest['bodyMode'] = fallbackBody ? 'raw' : 'none';
   let bodyContent = fallbackBody;
   let formBody: KeyValueItem[] = [];
+  let multipartBody: MultipartFormItem[] = [];
+  let binaryFilePath = '';
   const rawBody = source?.body as Record<string, unknown> | undefined;
   if (rawBody && rawBody.disabled !== true) {
     const mode = typeof rawBody.mode === 'string' ? rawBody.mode : '';
-    if (mode === 'urlencoded' || mode === 'formdata') {
-      const entries = Array.isArray(rawBody[mode]) ? (rawBody[mode] as Record<string, unknown>[]) : [];
+    if (mode === 'formdata') {
+      const entries = Array.isArray(rawBody.formdata) ? (rawBody.formdata as Record<string, unknown>[]) : [];
+      multipartBody = entries
+        .filter((entry) => typeof entry?.key === 'string' && entry.key.trim().length > 0)
+        .map((entry) => {
+          const isFile = entry.type === 'file';
+          const src = Array.isArray(entry.src)
+            ? (typeof entry.src[0] === 'string' ? entry.src[0] : '')
+            : (typeof entry.src === 'string' ? entry.src : '');
+          return {
+            id: uid('mp'),
+            key: String(entry.key),
+            value: isFile ? src : (typeof entry.value === 'string' ? entry.value : ''),
+            type: isFile ? 'file' : 'text',
+            contentType: typeof entry.contentType === 'string' ? entry.contentType : '',
+            description: typeof entry.description === 'string' ? entry.description : '',
+            enabled: entry.disabled !== true,
+          };
+        });
+      bodyMode = 'multipart';
+      bodyContent = '';
+    } else if (mode === 'urlencoded') {
+      const entries = Array.isArray(rawBody.urlencoded) ? (rawBody.urlencoded as Record<string, unknown>[]) : [];
       formBody = entries
         .filter((entry) => typeof entry?.key === 'string' && entry.key.trim().length > 0)
         .map((entry) => ({
@@ -188,17 +242,25 @@ function adaptPostmanRequestExtras(postmanItem: unknown, fallbackBearer: string,
         bodyMode = 'form';
         bodyContent = '';
       }
+    } else if (mode === 'file') {
+      const fileObj = rawBody.file as { src?: unknown } | undefined;
+      binaryFilePath = typeof fileObj?.src === 'string' ? fileObj.src : '';
+      bodyMode = 'binary';
+      bodyContent = '';
     } else if (fallbackBody) {
       const rawOptions = (rawBody.options as { raw?: { language?: unknown } } | undefined)?.raw;
-      const isJsonLanguage = rawOptions?.language === 'json';
+      const lang = typeof rawOptions?.language === 'string' ? rawOptions.language.toLowerCase() : '';
       const hasJsonHeader = headers.some(
         (h) => h.enabled && h.key.toLowerCase() === 'content-type' && h.value.toLowerCase().includes('json')
       );
-      bodyMode = isJsonLanguage || hasJsonHeader ? 'json' : 'raw';
+      const hasXmlHeader = headers.some(
+        (h) => h.enabled && h.key.toLowerCase() === 'content-type' && h.value.toLowerCase().includes('xml')
+      );
+      bodyMode = lang === 'json' || hasJsonHeader ? 'json' : lang === 'xml' || hasXmlHeader ? 'xml' : 'raw';
     }
   }
 
-  return { auth, bodyMode, bodyContent, formBody };
+  return { auth, bodyMode, bodyContent, formBody, multipartBody, binaryFilePath };
 }
 
 function adaptCollection(collection: LegacyCollection, requests: LegacyRequest[]) {
@@ -227,7 +289,7 @@ function adaptCollection(collection: LegacyCollection, requests: LegacyRequest[]
     const headerNames = new Set(manualHeaders.map(item => item.key.toLowerCase()));
     const defaults = pairs(collection.headers ?? '', ':').filter(item => !headerNames.has(item.key.toLowerCase()));
     const mergedHeaders = [...defaults, ...manualHeaders];
-    const { auth, bodyMode, bodyContent, formBody } = adaptPostmanRequestExtras(
+    const { auth, bodyMode, bodyContent, formBody, multipartBody, binaryFilePath } = adaptPostmanRequestExtras(
       request.postman_item,
       request.bearer,
       request.body,
@@ -239,6 +301,8 @@ function adaptCollection(collection: LegacyCollection, requests: LegacyRequest[]
       params: parseParamsFromUrl(request.url), headers: mergedHeaders,
       auth,
       bodyMode, bodyContent, formBody,
+      ...(multipartBody.length ? { multipartBody } : {}),
+      ...(binaryFilePath ? { binaryFilePath } : {}),
       assertions: collection.expected_status ? [{
         id: uid('assert'), enabled: true, source: 'status', property: '', operator: 'equals', expected: collection.expected_status,
       }] : [],
