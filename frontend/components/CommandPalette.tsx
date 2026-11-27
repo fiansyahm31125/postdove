@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Columns2,
+  FileUp,
   Globe,
   History,
   Import,
@@ -25,6 +26,7 @@ interface CommandPaletteProps {
   onNewRequest: () => void;
   onToggleSplit: () => void;
   onOpenImportCurl: () => void;
+  onImportPostman?: () => void;
 }
 
 export function CommandPalette({
@@ -39,6 +41,7 @@ export function CommandPalette({
   onNewRequest,
   onToggleSplit,
   onOpenImportCurl,
+  onImportPostman,
 }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
 
@@ -143,6 +146,19 @@ export function CommandPalette({
                 <Import className="w-3.5 h-3.5 text-ui-secondary" />
                 Import cURL Command
               </button>
+              {onImportPostman && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onImportPostman();
+                  }}
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-[4px] hover:bg-ui-border/70 text-[12px] text-ui-ink cursor-pointer"
+                >
+                  <FileUp className="w-3.5 h-3.5 text-ui-accent" />
+                  Import from Postman
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {

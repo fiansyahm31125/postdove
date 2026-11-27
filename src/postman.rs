@@ -14,8 +14,8 @@ pub fn import(input: &str) -> Result<(Collection, Vec<Request>), String> {
         .ok_or("Collection has no info.name.")?
         .to_owned();
     let schema = root["info"]["schema"].as_str().unwrap_or_default();
-    if !schema.contains("/v2.1.0/") {
-        return Err("Select a Postman Collection v2.1 JSON file.".into());
+    if !schema.contains("/v2.1.0/") && !schema.contains("/v2.0.0/") {
+        return Err("Select a Postman Collection v2.0 or v2.1 JSON file.".into());
     }
     let version = match &root["info"]["version"] {
         Value::String(value) => value.clone(),
@@ -80,6 +80,109 @@ fn description(value: &Value) -> &str {
         .unwrap_or_default()
 }
 
+fn sanitize_folder_name(raw: Option<&str>) -> String {
+    let trimmed = raw.unwrap_or_default().trim();
+    if trimmed.is_empty() {
+        return "Untitled folder".into();
+    }
+    let parts: Vec<&str> = trimmed
+        .split('/')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.is_empty() {
+        "Untitled folder".into()
+    } else {
+        parts.join(" - ")
+    }
+}
+
+fn extract_url(source: &Value) -> Option<String> {
+    if let Some(raw) = source
+        .as_str()
+        .or_else(|| source["url"].as_str())
+        .or_else(|| source["url"]["raw"].as_str())
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Some(raw.to_owned());
+    }
+    let url = source["url"].as_object()?;
+    let host = match url.get("host") {
+        Some(Value::String(value)) => value.trim().to_owned(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("."),
+        _ => String::new(),
+    };
+    let path = match url.get("path") {
+        Some(Value::String(value)) => value.trim_start_matches('/').to_owned(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("/"),
+        _ => String::new(),
+    };
+    if host.is_empty() && path.is_empty() {
+        return None;
+    }
+    let protocol = url
+        .get("protocol")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mut built = String::new();
+    if let Some(protocol) = protocol {
+        built.push_str(protocol);
+        built.push_str("://");
+    }
+    built.push_str(&host);
+    if !path.is_empty() {
+        if !built.is_empty() && !built.ends_with('/') {
+            built.push('/');
+        }
+        built.push_str(&path);
+    }
+    if let Some(queries) = url.get("query").and_then(Value::as_array) {
+        let pairs: Vec<String> = queries
+            .iter()
+            .filter(|entry| entry["disabled"] != true)
+            .filter_map(|entry| {
+                let key = entry["key"].as_str()?.trim();
+                if key.is_empty() {
+                    return None;
+                }
+                let value = entry["value"].as_str().unwrap_or_default();
+                Some(format!("{key}={value}"))
+            })
+            .collect();
+        if !pairs.is_empty() {
+            built.push('?');
+            built.push_str(&pairs.join("&"));
+        }
+    }
+    Some(built)
+}
+
+fn extract_bearer(auth: &Value) -> String {
+    if auth["type"].as_str() != Some("bearer") {
+        return String::new();
+    }
+    if let Some(items) = auth["bearer"].as_array() {
+        for entry in items {
+            if entry["key"].as_str() == Some("token") {
+                return entry["value"].as_str().unwrap_or_default().to_owned();
+            }
+        }
+    }
+    auth["bearer"]["token"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
 fn import_items(
     items: Vec<Value>,
     parent: &str,
@@ -96,18 +199,22 @@ fn import_items(
             return Err("Collection contains an invalid item.".into());
         }
         if let Some(children) = item["item"].as_array().cloned() {
-            let name = item["name"]
-                .as_str()
-                .filter(|name| !name.is_empty() && !name.contains('/'))
-                .ok_or("Folder names must be non-empty and cannot contain '/'.")?;
-            let path = if parent.is_empty() {
-                name.to_owned()
-            } else {
-                format!("{parent}/{name}")
+            let base_name = sanitize_folder_name(item["name"].as_str());
+            let mut name = base_name.clone();
+            let mut suffix = 2usize;
+            let path = loop {
+                let candidate = if parent.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{parent}/{name}")
+                };
+                if folders.insert(candidate.clone()) {
+                    break candidate;
+                }
+                name = format!("{base_name} ({suffix})");
+                suffix += 1;
             };
-            if !folders.insert(path.clone()) {
-                return Err(format!("Duplicate folder path: {path}"));
-            }
+            item["name"] = Value::String(name);
             item["item"] =
                 Value::Array(import_items(children, &path, folders, requests, depth + 1)?);
             metadata.push(item);
@@ -118,12 +225,8 @@ fn import_items(
             .as_str()
             .unwrap_or("Untitled request")
             .to_owned();
-        let url = source
-            .as_str()
-            .or_else(|| source["url"].as_str())
-            .or_else(|| source["url"]["raw"].as_str())
-            .ok_or_else(|| format!("Request '{name}' has no URL string or url.raw."))?
-            .to_owned();
+        let url = extract_url(source)
+            .ok_or_else(|| format!("Request '{name}' has no URL string or url.raw."))?;
         let headers_value = &source["header"];
         let headers = if let Some(raw) = headers_value.as_str() {
             raw.to_owned()
@@ -134,11 +237,12 @@ fn import_items(
                 .flatten()
                 .filter(|header| header["disabled"] != true)
                 .filter_map(|header| {
-                    Some(format!(
-                        "{}: {}",
-                        header["key"].as_str()?,
-                        header["value"].as_str()?
-                    ))
+                    let key = header["key"].as_str()?.trim();
+                    if key.is_empty() {
+                        return None;
+                    }
+                    let value = header["value"].as_str().unwrap_or_default();
+                    Some(format!("{key}: {value}"))
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
@@ -151,6 +255,7 @@ fn import_items(
                 .unwrap_or_default()
                 .to_owned()
         };
+        let bearer = extract_bearer(&source["auth"]);
         let method = source["method"].as_str().unwrap_or("GET").to_owned();
         requests.push(Request {
             name,
@@ -158,6 +263,7 @@ fn import_items(
             url,
             headers,
             body,
+            bearer,
             folder: parent.to_owned(),
             postman_item: Some(item),
             ..Request::default()
@@ -376,5 +482,106 @@ mod tests {
         let exported: Value = serde_json::from_str(&export(&collection, &[]).unwrap()).unwrap();
         assert_eq!(exported["item"][0]["description"], "Keep this");
         assert_eq!(exported["item"][0]["item"], json!([]));
+    }
+
+    #[test]
+    fn imports_bruno_exported_postman_with_slash_in_folder_name_and_variables() {
+        let document = json!({
+            "info": {"name": "Insomnia", "description": null, "schema": SCHEMA},
+            "item": [
+                {
+                    "name": "messager/IG",
+                    "item": [
+                        {
+                            "name": "Send Teks",
+                            "request": {
+                                "method": "POST",
+                                "header": [],
+                                "auth": {"type": "noauth"},
+                                "url": {"raw": "{{BASE_URL}}/webhook/service/meta"},
+                                "body": {
+                                    "mode": "raw",
+                                    "raw": "{\"object\":\"page\"}",
+                                    "options": {"raw": {"language": "json"}}
+                                }
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "message",
+                    "item": [
+                        {
+                            "name": "whatsapp",
+                            "item": [
+                                {
+                                    "name": "Send Pesan",
+                                    "request": {
+                                        "method": "POST",
+                                        "header": [],
+                                        "url": {"raw": "http://localhost:3430/webhook/service/meta"},
+                                        "body": {"mode": "raw", "raw": "{\"ok\":true}"}
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "variable": [
+                {"key": "BASE_URL", "value": "http://localhost:3430", "type": "default"}
+            ]
+        });
+
+        let (collection, requests) = import(&document.to_string()).unwrap();
+        assert_eq!(collection.name, "Insomnia");
+        assert_eq!(collection.variables, "BASE_URL=http://localhost:3430");
+        assert_eq!(
+            collection.folders,
+            vec!["message", "message/whatsapp", "messager - IG"]
+        );
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].folder, "messager - IG");
+        assert_eq!(requests[0].url, "{{BASE_URL}}/webhook/service/meta");
+        assert_eq!(requests[1].folder, "message/whatsapp");
+
+        let exported = export(&collection, &requests.iter().collect::<Vec<_>>()).unwrap();
+        let (reimported, reimported_requests) = import(&exported).unwrap();
+        assert_eq!(reimported.folders, collection.folders);
+        assert_eq!(reimported_requests.len(), 2);
+    }
+
+    #[test]
+    fn handles_duplicate_folders_v2_0_schema_and_bearer_auth() {
+        let document = json!({
+            "info": {
+                "name": "Legacy",
+                "schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json"
+            },
+            "item": [
+                {
+                    "name": "Auth",
+                    "item": [{
+                        "name": "Me",
+                        "request": {
+                            "method": "GET",
+                            "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "secret123"}]},
+                            "url": {
+                                "protocol": "https",
+                                "host": ["api", "example", "com"],
+                                "path": ["v1", "me"],
+                                "query": [{"key": "expand", "value": "roles"}]
+                            }
+                        }
+                    }]
+                },
+                {"name": "Auth", "item": []}
+            ]
+        });
+
+        let (collection, requests) = import(&document.to_string()).unwrap();
+        assert_eq!(collection.folders, vec!["Auth", "Auth (2)"]);
+        assert_eq!(requests[0].url, "https://api.example.com/v1/me?expand=roles");
+        assert_eq!(requests[0].bearer, "secret123");
     }
 }

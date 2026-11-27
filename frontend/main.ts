@@ -124,6 +124,83 @@ function migrateCollectionProfiles(state: StudioWorkspace): StudioWorkspace {
   return { ...state, folders, requests };
 }
 
+function postmanAuthValue(entries: unknown, key: string): string {
+  if (Array.isArray(entries)) {
+    const match = entries.find(
+      (entry): entry is { key?: unknown; value?: unknown } =>
+        Boolean(entry && typeof entry === 'object' && (entry as { key?: unknown }).key === key)
+    );
+    return typeof match?.value === 'string' ? match.value : '';
+  }
+  if (entries && typeof entries === 'object') {
+    const value = (entries as Record<string, unknown>)[key];
+    return typeof value === 'string' ? value : '';
+  }
+  return '';
+}
+
+function adaptPostmanRequestExtras(postmanItem: unknown, fallbackBearer: string, fallbackBody: string, headers: KeyValueItem[]) {
+  const source = (postmanItem as { request?: Record<string, unknown> } | undefined)?.request;
+  let auth: ApiRequest['auth'] = {
+    ...DEFAULT_AUTH,
+    ...(fallbackBearer ? { type: 'bearer' as const, bearerToken: fallbackBearer } : {}),
+  };
+  const rawAuth = source?.auth as Record<string, unknown> | undefined;
+  if (rawAuth && typeof rawAuth.type === 'string') {
+    if (rawAuth.type === 'bearer') {
+      const token = postmanAuthValue(rawAuth.bearer, 'token') || fallbackBearer;
+      if (token) auth = { ...DEFAULT_AUTH, type: 'bearer', bearerToken: token };
+    } else if (rawAuth.type === 'basic') {
+      auth = {
+        ...DEFAULT_AUTH,
+        type: 'basic',
+        basicUsername: postmanAuthValue(rawAuth.basic, 'username'),
+        basicPassword: postmanAuthValue(rawAuth.basic, 'password'),
+      };
+    } else if (rawAuth.type === 'apikey') {
+      const keyName = postmanAuthValue(rawAuth.apikey, 'key');
+      const keyValue = postmanAuthValue(rawAuth.apikey, 'value');
+      const keyIn = postmanAuthValue(rawAuth.apikey, 'in') === 'query' ? 'query' : 'header';
+      if (keyName) {
+        auth = { ...DEFAULT_AUTH, type: 'apikey', apiKeyName: keyName, apiKeyValue: keyValue, apiKeyIn: keyIn };
+      }
+    }
+  }
+
+  let bodyMode: ApiRequest['bodyMode'] = fallbackBody ? 'raw' : 'none';
+  let bodyContent = fallbackBody;
+  let formBody: KeyValueItem[] = [];
+  const rawBody = source?.body as Record<string, unknown> | undefined;
+  if (rawBody && rawBody.disabled !== true) {
+    const mode = typeof rawBody.mode === 'string' ? rawBody.mode : '';
+    if (mode === 'urlencoded' || mode === 'formdata') {
+      const entries = Array.isArray(rawBody[mode]) ? (rawBody[mode] as Record<string, unknown>[]) : [];
+      formBody = entries
+        .filter((entry) => typeof entry?.key === 'string' && entry.key.trim().length > 0)
+        .map((entry) => ({
+          id: uid('kv'),
+          key: String(entry.key),
+          value: typeof entry.value === 'string' ? entry.value : '',
+          description: typeof entry.description === 'string' ? entry.description : '',
+          enabled: entry.disabled !== true,
+        }));
+      if (formBody.length > 0) {
+        bodyMode = 'form';
+        bodyContent = '';
+      }
+    } else if (fallbackBody) {
+      const rawOptions = (rawBody.options as { raw?: { language?: unknown } } | undefined)?.raw;
+      const isJsonLanguage = rawOptions?.language === 'json';
+      const hasJsonHeader = headers.some(
+        (h) => h.enabled && h.key.toLowerCase() === 'content-type' && h.value.toLowerCase().includes('json')
+      );
+      bodyMode = isJsonLanguage || hasJsonHeader ? 'json' : 'raw';
+    }
+  }
+
+  return { auth, bodyMode, bodyContent, formBody };
+}
+
 function adaptCollection(collection: LegacyCollection, requests: LegacyRequest[]) {
   const root = uid('col');
   const profiles = localProfiles(variableRows(collection.variables ?? ''));
@@ -149,12 +226,19 @@ function adaptCollection(collection: LegacyCollection, requests: LegacyRequest[]
     const manualHeaders = pairs(request.headers, ':');
     const headerNames = new Set(manualHeaders.map(item => item.key.toLowerCase()));
     const defaults = pairs(collection.headers ?? '', ':').filter(item => !headerNames.has(item.key.toLowerCase()));
+    const mergedHeaders = [...defaults, ...manualHeaders];
+    const { auth, bodyMode, bodyContent, formBody } = adaptPostmanRequestExtras(
+      request.postman_item,
+      request.bearer,
+      request.body,
+      mergedHeaders
+    );
     return {
       id: uid('req'), folderId: addPath(request.folder),
       name: request.name || request.url, method: request.method as ApiRequest['method'], url: request.url,
-      params: parseParamsFromUrl(request.url), headers: [...defaults, ...manualHeaders],
-      auth: { ...DEFAULT_AUTH, ...(request.bearer ? { type: 'bearer' as const, bearerToken: request.bearer } : {}) },
-      bodyMode: request.body ? 'raw' : 'none', bodyContent: request.body, formBody: [],
+      params: parseParamsFromUrl(request.url), headers: mergedHeaders,
+      auth,
+      bodyMode, bodyContent, formBody,
       assertions: collection.expected_status ? [{
         id: uid('assert'), enabled: true, source: 'status', property: '', operator: 'equals', expected: collection.expected_status,
       }] : [],

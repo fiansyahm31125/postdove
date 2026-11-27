@@ -1314,6 +1314,11 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
                       setMobileDrawerOpen(false);
                       setImportCurlOpen(true);
                     }}
+                    onImportPostman={() => {
+                      setMobileDrawerOpen(false);
+                      void importCollection();
+                    }}
+                    onExportPostman={exportCollection}
                     width={280}
                     isOverlay
                     onCloseOverlay={() => setMobileDrawerOpen(false)}
@@ -1799,6 +1804,7 @@ export default function App({ initial, onLogout }: { initial: StudioWorkspace; o
           setSplitOrientation((o) => (o === 'horizontal' ? 'vertical' : 'horizontal'))
         }
         onOpenImportCurl={() => setImportCurlOpen(true)}
+        onImportPostman={importCollection}
       />
 
       <ImportCurlModal

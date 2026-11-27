@@ -3,6 +3,8 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Download,
+  FileUp,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -187,7 +189,9 @@ export function Sidebar({
               <FolderPlus className="w-3 h-3" />
             </button>
             {onExportPostman && <button type="button" title="Export Postman collection" aria-label={`Export ${folder.name}`}
-              className="p-1 text-ui-secondary hover:text-ui-ink" onClick={() => onExportPostman(folder.id)}>↓</button>}
+              className="p-0.5 rounded-[3px] text-ui-secondary hover:text-ui-ink hover:bg-ui-border cursor-pointer" onClick={() => onExportPostman(folder.id)}>
+              <Download className="w-3 h-3" />
+            </button>}
 
             {folders.length > 1 && (
               <button
@@ -316,6 +320,17 @@ export function Sidebar({
           >
             <Import className="w-3.5 h-3.5" />
           </button>
+          {onImportPostman && (
+            <button
+              type="button"
+              onClick={onImportPostman}
+              title="Import from Postman"
+              aria-label="Import from Postman"
+              className="p-1 rounded-[4px] text-ui-secondary hover:text-ui-ink hover:bg-ui-elevated transition-colors cursor-pointer"
+            >
+              <FileUp className="w-3.5 h-3.5" />
+            </button>
+          )}
           {isOverlay && onCloseOverlay && (
             <button
               type="button"
@@ -326,8 +341,6 @@ export function Sidebar({
               <X className="w-3.5 h-3.5" />
             </button>
           )}
-          {onImportPostman && <button type="button" title="Import Postman collection" aria-label="Import Postman collection"
-          className="p-1 text-ui-secondary hover:text-ui-ink" onClick={onImportPostman}>↑</button>}
       </div>
       </div>
 
@@ -402,7 +415,17 @@ export function Sidebar({
       </div>
 
       {/* Footer Quick Action */}
-      <div className="p-2 border-t border-ui-border shrink-0">
+      <div className="p-2 border-t border-ui-border shrink-0 space-y-1.5">
+        {onImportPostman && (
+          <button
+            type="button"
+            onClick={onImportPostman}
+            className="w-full flex items-center justify-center gap-1.5 h-[28px] bg-ui-elevated hover:bg-ui-hover border border-ui-border rounded-[4px] text-[12px] font-medium text-ui-ink transition-colors cursor-pointer whitespace-nowrap"
+          >
+            <FileUp className="w-3.5 h-3.5 text-ui-accent" />
+            Import from Postman
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpenImportCurl}
